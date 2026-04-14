@@ -580,10 +580,11 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
   
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
+    // Restore manual CLI run registrations before reaping, so the reaper skips them.
+    // Then reap orphaned running runs and resume any persisted queued runs.
     void heartbeat
-      .reapOrphanedRuns()
+      .restoreManualRunRegistrations()
+      .then(() => heartbeat.reapOrphanedRuns())
       .then(() => heartbeat.resumeQueuedRuns())
       .then(async () => {
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();

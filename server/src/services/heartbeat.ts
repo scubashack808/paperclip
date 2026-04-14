@@ -5078,6 +5078,63 @@ export function heartbeatService(db: Db) {
 
     reconcileStrandedAssignedIssues,
 
+    createManualRun: async (agentId: string, opts?: { contextSnapshot?: Record<string, unknown> }) => {
+      const agent = await getAgent(agentId);
+      if (!agent) throw notFound("Agent not found");
+
+      const now = new Date();
+      const run = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          invocationSource: "manual_cli",
+          triggerDetail: "manual",
+          status: "running",
+          startedAt: now,
+          contextSnapshot: opts?.contextSnapshot ?? { source: "manual_cli" },
+          issueCommentStatus: "not_applicable",
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      activeRunExecutions.add(run.id);
+
+      publishLiveEvent({
+        companyId: run.companyId,
+        type: "heartbeat.run.status",
+        payload: { runId: run.id, agentId: run.agentId, status: "running" },
+      });
+
+      return run;
+    },
+
+    finishManualRun: async (runId: string, agentId?: string) => {
+      const run = await getRun(runId);
+      if (!run) throw notFound("Run not found");
+      if (run.invocationSource !== "manual_cli") throw conflict("Only manual_cli runs can be finished via this endpoint");
+      if (run.status !== "running") throw conflict("Run is not running");
+      if (agentId && run.agentId !== agentId) throw conflict("Run does not belong to this agent");
+
+      activeRunExecutions.delete(runId);
+
+      const updated = await setRunStatus(runId, "succeeded", { finishedAt: new Date() });
+      return updated;
+    },
+
+    restoreManualRunRegistrations: async () => {
+      const manualRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.invocationSource, "manual_cli"), eq(heartbeatRuns.status, "running")));
+
+      for (const run of manualRuns) {
+        activeRunExecutions.add(run.id);
+      }
+      return manualRuns.length;
+    },
+
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
       let checked = 0;

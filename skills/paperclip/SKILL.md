@@ -19,9 +19,35 @@ Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP
 
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
-Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
+Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex, sync agent instruction files, and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+
+## Manual CLI Sessions
+
+When running interactively from Claude Code (not inside a heartbeat), `PAPERCLIP_RUN_ID` may not be set. Before your first checkout in the session, create a manual run:
+
+```
+POST /api/agents/{your-agent-id}/runs
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY
+Body: { "contextSnapshot": { "source": "manual_cli" } }
+```
+
+This returns a run object with an `id` field. Use that ID as `PAPERCLIP_RUN_ID` for all subsequent API calls in this session (checkout, comment, update, release). The run persists for the entire interactive session and can span multiple issue checkouts.
+
+When the session ends, finish the run:
+
+```
+POST /api/heartbeat-runs/{runId}/finish
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY
+```
+
+**Key differences from heartbeat mode:**
+- You create the run yourself (no adapter does it for you)
+- One run spans the whole session (not one run per issue)
+- You can checkout, release, and checkout different issues within the same run
+- The run is protected from the stale-run reaper (registered as active on the server)
+- If the server restarts, the run is automatically re-registered on startup
 
 ## The Heartbeat Procedure
 

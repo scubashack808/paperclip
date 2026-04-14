@@ -261,6 +261,50 @@ export function registerAgentCommands(program: Command): void {
             );
           }
 
+          // Download agent instruction files from the server
+          const instructionsDir = path.join(
+            os.homedir(),
+            ".paperclip",
+            "instances",
+            "default",
+            "companies",
+            agentRow.companyId,
+            "agents",
+            agentRow.id,
+            "instructions",
+          );
+          let instructionsSynced = 0;
+          try {
+            interface InstructionBundleFile {
+              path: string;
+              size: number;
+            }
+            interface InstructionBundle {
+              files: InstructionBundleFile[];
+            }
+            interface InstructionFileContent {
+              path: string;
+              content: string;
+            }
+            const bundle = await ctx.api.get<InstructionBundle>(
+              `/api/agents/${agentRow.id}/instructions-bundle`,
+            );
+            if (bundle?.files?.length) {
+              await fs.mkdir(instructionsDir, { recursive: true });
+              for (const file of bundle.files) {
+                const fileData = await ctx.api.get<InstructionFileContent>(
+                  `/api/agents/${agentRow.id}/instructions-bundle/file?path=${encodeURIComponent(file.path)}`,
+                );
+                if (fileData?.content) {
+                  await fs.writeFile(path.join(instructionsDir, file.path), fileData.content, "utf-8");
+                  instructionsSynced++;
+                }
+              }
+            }
+          } catch {
+            // Non-fatal: instructions sync is best-effort
+          }
+
           const exportsText = buildAgentEnvExports({
             apiBase: ctx.api.apiBase,
             companyId: agentRow.companyId,
@@ -284,6 +328,7 @@ export function registerAgentCommands(program: Command): void {
                   token: key.token,
                 },
                 skills: installSummaries,
+                instructions: { dir: instructionsDir, synced: instructionsSynced },
                 exports: exportsText,
               },
               { json: true },
@@ -302,6 +347,9 @@ export function registerAgentCommands(program: Command): void {
                 console.log(`  failed ${failed.name}: ${failed.error}`);
               }
             }
+          }
+          if (instructionsSynced > 0) {
+            console.log(`instructions: ${instructionsSynced} files synced to ${instructionsDir}`);
           }
           console.log("");
           console.log("# Run this in your shell before launching codex/claude:");

@@ -2349,6 +2349,79 @@ export function agentRoutes(db: Db) {
     res.json(run);
   });
 
+  router.post("/agents/:id/runs", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    // Allow board users or the agent itself
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      res.status(403).json({ error: "Agent can only create runs for itself" });
+      return;
+    }
+
+    const run = await heartbeat.createManualRun(id, {
+      contextSnapshot: req.body?.contextSnapshot ?? undefined,
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: agent.id,
+      runId: run.id,
+      action: "heartbeat.manual_run_created",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: { agentId: id, source: "manual_cli" },
+    });
+
+    res.status(201).json(run);
+  });
+
+  router.post("/heartbeat-runs/:runId/finish", async (req, res) => {
+    const runId = req.params.runId as string;
+    const existing = await heartbeat.getRun(runId);
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    // Allow board users or the agent that owns the run
+    if (req.actor.type === "agent" && req.actor.agentId !== existing.agentId) {
+      res.status(403).json({ error: "Agent can only finish its own runs" });
+      return;
+    }
+
+    const run = await heartbeat.finishManualRun(
+      runId,
+      req.actor.type === "agent" ? req.actor.agentId ?? undefined : undefined,
+    );
+
+    if (run) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: run.agentId,
+        runId: run.id,
+        action: "heartbeat.manual_run_finished",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: { agentId: run.agentId },
+      });
+    }
+
+    res.json(run);
+  });
+
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
