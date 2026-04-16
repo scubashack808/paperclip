@@ -24,8 +24,12 @@ export interface CostEvent {
 export interface CostSummary {
   companyId: string;
   spendCents: number;
+  estimatedCostCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
 }
 
 export interface CostByAgent {
@@ -33,6 +37,7 @@ export interface CostByAgent {
   agentName: string | null;
   agentStatus: string | null;
   costCents: number;
+  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -49,6 +54,7 @@ export interface CostByProviderModel {
   billingType: BillingType;
   model: string;
   costCents: number;
+  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -62,6 +68,7 @@ export interface CostByProviderModel {
 export interface CostByBiller {
   biller: string;
   costCents: number;
+  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -83,6 +90,7 @@ export interface CostByAgentModel {
   billingType: BillingType;
   model: string;
   costCents: number;
+  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -107,6 +115,7 @@ export interface CostByProject {
   projectId: string | null;
   projectName: string | null;
   costCents: number;
+  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

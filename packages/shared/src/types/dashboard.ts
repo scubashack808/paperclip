@@ -14,8 +14,12 @@ export interface DashboardSummary {
   };
   costs: {
     monthSpendCents: number;
+    estimatedCostCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
   };
   pendingApprovals: number;
   budgets: {

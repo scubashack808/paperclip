@@ -11,6 +11,23 @@ export function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/** Format an estimated cost, prefixed with ~ to distinguish from actual cost. */
+export function formatEstimatedCents(cents: number): string {
+  return `~$${(cents / 100).toFixed(2)}`;
+}
+
+/**
+ * Return the best cost display string:
+ * - If actual cost > 0, show it directly
+ * - If actual cost is 0 but estimated > 0, show estimated with ~ prefix
+ * - Otherwise show "$0.00"
+ */
+export function formatCostOrEstimated(costCents: number, estimatedCostCents: number): string {
+  if (costCents > 0) return formatCents(costCents);
+  if (estimatedCostCents > 0) return formatEstimatedCents(estimatedCostCents);
+  return formatCents(0);
+}
+
 export function formatDate(date: Date | string): string {
   return new Date(date).toLocaleDateString("en-US", {
     month: "short",

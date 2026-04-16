@@ -278,8 +278,12 @@ const dashboard: DashboardSummary = {
   },
   costs: {
     monthSpendCents: 900,
+    estimatedCostCents: 900,
     monthBudgetCents: 1000,
     monthUtilizationPercent: 90,
+    inputTokens: 50000,
+    cachedInputTokens: 10000,
+    outputTokens: 20000,
   },
   pendingApprovals: 1,
   budgets: {

@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
+import { estimateApiCostCents } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -109,24 +110,53 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [row] = await db
         .select({
           total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
         })
         .from(costEvents)
         .where(and(...conditions));
 
-      const spendCents = Number(total);
+      const spendCents = Number(row.total);
+      const inputTokens = Number(row.inputTokens);
+      const cachedInputTokens = Number(row.cachedInputTokens);
+      const outputTokens = Number(row.outputTokens);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (spendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      // Compute per-model estimated cost for accurate shadow pricing
+      const modelRows = spendCents === 0 && (inputTokens + cachedInputTokens + outputTokens) > 0
+        ? await db
+            .select({
+              model: costEvents.model,
+              inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+              cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+              outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+            })
+            .from(costEvents)
+            .where(and(...conditions))
+            .groupBy(costEvents.model)
+        : [];
+
+      const estimatedCost = modelRows.reduce(
+        (sum, m) => sum + estimateApiCostCents(m.model, Number(m.inputTokens), Number(m.cachedInputTokens), Number(m.outputTokens)),
+        0,
+      );
+
       return {
         companyId,
         spendCents,
+        estimatedCostCents: spendCents > 0 ? spendCents : estimatedCost,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
       };
     },
 
@@ -135,7 +165,27 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      return db
+      // Fetch per-agent-model token breakdown for accurate estimated cost
+      const agentModelRows = await db
+        .select({
+          agentId: costEvents.agentId,
+          model: costEvents.model,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(costEvents.agentId, costEvents.model);
+
+      const estimatedByAgent = new Map<string, number>();
+      for (const row of agentModelRows) {
+        const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
+        estimatedByAgent.set(row.agentId, (estimatedByAgent.get(row.agentId) ?? 0) + est);
+      }
+
+      const rows = await db
         .select({
           agentId: costEvents.agentId,
           agentName: agents.name,
@@ -160,6 +210,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.status)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+      return rows.map((row) => ({
+        ...row,
+        estimatedCostCents: row.costCents > 0 ? row.costCents : (estimatedByAgent.get(row.agentId) ?? 0),
+      }));
     },
 
     byProvider: async (companyId: string, range?: CostDateRange) => {
@@ -167,7 +222,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      return db
+      const rows = await db
         .select({
           provider: costEvents.provider,
           biller: costEvents.biller,
@@ -192,6 +247,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+      return rows.map((row) => ({
+        ...row,
+        estimatedCostCents: row.costCents > 0
+          ? row.costCents
+          : estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens)),
+      }));
     },
 
     byBiller: async (companyId: string, range?: CostDateRange) => {
@@ -199,7 +261,26 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      return db
+      // Per-biller-model breakdown for estimated cost
+      const billerModelRows = await db
+        .select({
+          biller: costEvents.biller,
+          model: costEvents.model,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(costEvents.biller, costEvents.model);
+
+      const estimatedByBiller = new Map<string, number>();
+      for (const row of billerModelRows) {
+        const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
+        estimatedByBiller.set(row.biller, (estimatedByBiller.get(row.biller) ?? 0) + est);
+      }
+
+      const rows = await db
         .select({
           biller: costEvents.biller,
           costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
@@ -223,6 +304,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.biller)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+      return rows.map((row) => ({
+        ...row,
+        estimatedCostCents: row.costCents > 0 ? row.costCents : (estimatedByBiller.get(row.biller) ?? 0),
+      }));
     },
 
     /**
@@ -284,7 +370,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       // the (companyId, agentId, occurredAt) composite index covers this well.
       // order by provider + model for stable db-level ordering; cost-desc sort
       // within each agent's sub-rows is done client-side in the ui memo.
-      return db
+      const rows = await db
         .select({
           agentId: costEvents.agentId,
           agentName: agents.name,
@@ -309,6 +395,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           costEvents.model,
         )
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
+
+      return rows.map((row) => ({
+        ...row,
+        estimatedCostCents: row.costCents > 0
+          ? row.costCents
+          : estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens)),
+      }));
     },
 
     byProject: async (companyId: string, range?: CostDateRange) => {
@@ -344,7 +437,30 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       const costCentsExpr = sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`;
 
-      return db
+      // Get per-project-model breakdown for accurate estimated cost
+      const projectModelRows = await db
+        .select({
+          projectId: effectiveProjectId,
+          model: costEvents.model,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+        })
+        .from(costEvents)
+        .leftJoin(runProjectLinks, eq(costEvents.heartbeatRunId, runProjectLinks.runId))
+        .innerJoin(projects, sql`${projects.id} = ${effectiveProjectId}`)
+        .where(and(...conditions, sql`${effectiveProjectId} is not null`))
+        .groupBy(effectiveProjectId, costEvents.model);
+
+      const estimatedByProject = new Map<string, number>();
+      for (const row of projectModelRows) {
+        const key = row.projectId ?? "__null__";
+        const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
+        estimatedByProject.set(key, (estimatedByProject.get(key) ?? 0) + est);
+      }
+
+      const rows = await db
         .select({
           projectId: effectiveProjectId,
           projectName: projects.name,
@@ -359,6 +475,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
+
+      return rows.map((row) => ({
+        ...row,
+        estimatedCostCents: row.costCents > 0
+          ? row.costCents
+          : (estimatedByProject.get(row.projectId ?? "__null__") ?? 0),
+      }));
     },
   };
 }

@@ -724,3 +724,67 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+/**
+ * Estimated API pricing per model for shadow-cost calculations.
+ * Prices are in USD per 1 million tokens.
+ * Used to show "what this would cost on API" for subscription/max-plan users.
+ */
+export interface ModelPricing {
+  inputPer1M: number;
+  cachedInputPer1M: number;
+  outputPer1M: number;
+}
+
+export const MODEL_API_PRICING: Record<string, ModelPricing> = {
+  // Anthropic Claude 4.x / 3.x
+  "claude-opus-4-6": { inputPer1M: 15, cachedInputPer1M: 1.875, outputPer1M: 75 },
+  "claude-sonnet-4-6": { inputPer1M: 3, cachedInputPer1M: 0.375, outputPer1M: 15 },
+  "claude-opus-4-5-20250514": { inputPer1M: 15, cachedInputPer1M: 1.875, outputPer1M: 75 },
+  "claude-sonnet-4-5-20250514": { inputPer1M: 3, cachedInputPer1M: 0.375, outputPer1M: 15 },
+  "claude-haiku-4-5-20251001": { inputPer1M: 0.80, cachedInputPer1M: 0.08, outputPer1M: 4 },
+  "claude-3-5-sonnet-20241022": { inputPer1M: 3, cachedInputPer1M: 0.375, outputPer1M: 15 },
+  "claude-3-5-haiku-20241022": { inputPer1M: 0.80, cachedInputPer1M: 0.08, outputPer1M: 4 },
+  "claude-3-opus-20240229": { inputPer1M: 15, cachedInputPer1M: 1.875, outputPer1M: 75 },
+  "claude-3-haiku-20240307": { inputPer1M: 0.25, cachedInputPer1M: 0.03, outputPer1M: 1.25 },
+  // OpenAI GPT-4o / 4.1
+  "gpt-4o": { inputPer1M: 2.50, cachedInputPer1M: 1.25, outputPer1M: 10 },
+  "gpt-4o-mini": { inputPer1M: 0.15, cachedInputPer1M: 0.075, outputPer1M: 0.60 },
+  "gpt-4.1": { inputPer1M: 2, cachedInputPer1M: 0.50, outputPer1M: 8 },
+  "gpt-4.1-mini": { inputPer1M: 0.40, cachedInputPer1M: 0.10, outputPer1M: 1.60 },
+  "gpt-4.1-nano": { inputPer1M: 0.10, cachedInputPer1M: 0.025, outputPer1M: 0.40 },
+  "o3": { inputPer1M: 2, cachedInputPer1M: 0.50, outputPer1M: 8 },
+  "o3-mini": { inputPer1M: 1.10, cachedInputPer1M: 0.55, outputPer1M: 4.40 },
+  "o4-mini": { inputPer1M: 1.10, cachedInputPer1M: 0.275, outputPer1M: 4.40 },
+  // Google Gemini
+  "gemini-2.5-pro": { inputPer1M: 1.25, cachedInputPer1M: 0.3125, outputPer1M: 10 },
+  "gemini-2.5-flash": { inputPer1M: 0.15, cachedInputPer1M: 0.0375, outputPer1M: 0.60 },
+  "gemini-2.0-flash": { inputPer1M: 0.10, cachedInputPer1M: 0.025, outputPer1M: 0.40 },
+};
+
+/** Default fallback pricing when a model is not in the table (roughly mid-tier). */
+export const DEFAULT_MODEL_PRICING: ModelPricing = {
+  inputPer1M: 3,
+  cachedInputPer1M: 0.375,
+  outputPer1M: 15,
+};
+
+/**
+ * Estimate API cost in cents for a given model and token counts.
+ * Returns 0 if tokens are all zero.
+ */
+export function estimateApiCostCents(
+  model: string,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+): number {
+  const pricing = MODEL_API_PRICING[model] ?? DEFAULT_MODEL_PRICING;
+  const cost =
+    (inputTokens * pricing.inputPer1M +
+      cachedInputTokens * pricing.cachedInputPer1M +
+      outputTokens * pricing.outputPer1M) /
+    1_000_000;
+  // Convert USD to cents and round
+  return Math.round(cost * 100);
+}

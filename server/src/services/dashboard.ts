@@ -1,6 +1,7 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import { estimateApiCostCents } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
@@ -63,19 +64,46 @@ export function dashboardService(db: Db) {
 
       const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const [{ monthSpend }] = await db
+      const monthConditions = [
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, monthStart),
+      ];
+
+      const [costRow] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
         })
         .from(costEvents)
-        .where(
-          and(
-            eq(costEvents.companyId, companyId),
-            gte(costEvents.occurredAt, monthStart),
-          ),
-        );
+        .where(and(...monthConditions));
 
-      const monthSpendCents = Number(monthSpend);
+      const monthSpendCents = Number(costRow.monthSpend);
+      const inputTokens = Number(costRow.inputTokens);
+      const cachedInputTokens = Number(costRow.cachedInputTokens);
+      const outputTokens = Number(costRow.outputTokens);
+
+      // Compute per-model estimated cost for accurate shadow pricing
+      let estimatedCostCents = monthSpendCents;
+      if (monthSpendCents === 0 && (inputTokens + cachedInputTokens + outputTokens) > 0) {
+        const modelRows = await db
+          .select({
+            model: costEvents.model,
+            inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+            cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+            outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          })
+          .from(costEvents)
+          .where(and(...monthConditions))
+          .groupBy(costEvents.model);
+
+        estimatedCostCents = modelRows.reduce(
+          (sum, m) => sum + estimateApiCostCents(m.model, Number(m.inputTokens), Number(m.cachedInputTokens), Number(m.outputTokens)),
+          0,
+        );
+      }
+
       const utilization =
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
@@ -93,8 +121,12 @@ export function dashboardService(db: Db) {
         tasks: taskCounts,
         costs: {
           monthSpendCents,
+          estimatedCostCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
         },
         pendingApprovals,
         budgets: {
