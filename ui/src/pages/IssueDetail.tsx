@@ -1245,6 +1245,28 @@ export function IssueDetail() {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
 
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
+      }
+      pushToast({ title: "Issue deleted", tone: "success" });
+      navigate(-1);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unable to delete issue",
+        tone: "error",
+      });
+    },
+  });
+  const handleDeleteIssue = useCallback(() => {
+    deleteIssue.mutate();
+  }, [deleteIssue.mutate]);
+
   const updateChildIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => {
@@ -1806,10 +1828,11 @@ export function IssueDetail() {
         childIssues={childIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
+        onDelete={handleDeleteIssue}
       />
     );
     return () => closePanel();
-  }, [closePanel, handleIssuePropertiesUpdate, issuePanelKey, openNewSubIssue, openPanel]);
+  }, [closePanel, handleDeleteIssue, handleIssuePropertiesUpdate, issuePanelKey, openNewSubIssue, openPanel]);
 
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
@@ -2659,6 +2682,7 @@ export function IssueDetail() {
                 childIssues={childIssues}
                 onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
+                onDelete={handleDeleteIssue}
                 inline
               />
             </div>
