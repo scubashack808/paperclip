@@ -2169,6 +2169,7 @@ export function IssueDetail() {
           <StatusIcon
             status={issue.status}
             onChange={(status) => updateIssue.mutate({ status })}
+            onDelete={handleDeleteIssue}
           />
           <PriorityIcon
             priority={issue.priority}
