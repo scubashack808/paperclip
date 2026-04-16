@@ -71,10 +71,10 @@ export function dashboardService(db: Db) {
 
       const [costRow] = await db
         .select({
-          monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
-          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
-          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
-          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
         })
         .from(costEvents)
         .where(and(...monthConditions));
@@ -90,9 +90,9 @@ export function dashboardService(db: Db) {
         const modelRows = await db
           .select({
             model: costEvents.model,
-            inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
-            cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
-            outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+            inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+            cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
+            outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
           })
           .from(costEvents)
           .where(and(...monthConditions))
