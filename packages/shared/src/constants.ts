@@ -726,65 +726,352 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
 
 /**
- * Estimated API pricing per model for shadow-cost calculations.
- * Prices are in USD per 1 million tokens.
- * Used to show "what this would cost on API" for subscription/max-plan users.
+ * Estimated API pricing per model for shadow-cost calculations (PAP-19).
+ * Base rates are USD per 1 million tokens; cache-read and cache-write rates
+ * are derived from the input rate using Anthropic's published multipliers
+ * when not set explicitly, so the table stays small and the multipliers
+ * (0.1x read, 1.25x 5m write, 2.0x 1h write) are the single source of truth.
+ *
+ * Prices and modifier multipliers are sourced from Anthropic's pricing docs.
+ * When updating this table, bump sourceFetchedAt and keep the note next to
+ * the pricing constants below.
  */
 export interface ModelPricing {
+  /** Canonical model id used as the lookup key. */
+  modelId: string;
+  /** Alternate ids that should resolve to this entry (normalized before match). */
+  aliases?: string[];
+  /** USD per 1M input tokens. */
   inputPer1M: number;
-  cachedInputPer1M: number;
+  /** USD per 1M cache-read tokens. Defaults to inputPer1M * 0.1. */
+  cacheReadPer1M?: number;
+  /** USD per 1M 5-minute cache-write tokens. Defaults to inputPer1M * 1.25. */
+  cacheWrite5mPer1M?: number;
+  /** USD per 1M 1-hour cache-write tokens. Defaults to inputPer1M * 2.0. */
+  cacheWrite1hPer1M?: number;
+  /** USD per 1M output tokens. */
   outputPer1M: number;
+  /** URL this row was sourced from. */
+  source: string;
+  /** ISO date the source was last fetched. */
+  sourceFetchedAt: string;
 }
 
-export const MODEL_API_PRICING: Record<string, ModelPricing> = {
-  // Anthropic Claude 4.x / 3.x
-  "claude-opus-4-6": { inputPer1M: 15, cachedInputPer1M: 1.875, outputPer1M: 75 },
-  "claude-sonnet-4-6": { inputPer1M: 3, cachedInputPer1M: 0.375, outputPer1M: 15 },
-  "claude-opus-4-5-20250514": { inputPer1M: 15, cachedInputPer1M: 1.875, outputPer1M: 75 },
-  "claude-sonnet-4-5-20250514": { inputPer1M: 3, cachedInputPer1M: 0.375, outputPer1M: 15 },
-  "claude-haiku-4-5-20251001": { inputPer1M: 0.80, cachedInputPer1M: 0.08, outputPer1M: 4 },
-  "claude-3-5-sonnet-20241022": { inputPer1M: 3, cachedInputPer1M: 0.375, outputPer1M: 15 },
-  "claude-3-5-haiku-20241022": { inputPer1M: 0.80, cachedInputPer1M: 0.08, outputPer1M: 4 },
-  "claude-3-opus-20240229": { inputPer1M: 15, cachedInputPer1M: 1.875, outputPer1M: 75 },
-  "claude-3-haiku-20240307": { inputPer1M: 0.25, cachedInputPer1M: 0.03, outputPer1M: 1.25 },
-  // OpenAI GPT-4o / 4.1
-  "gpt-4o": { inputPer1M: 2.50, cachedInputPer1M: 1.25, outputPer1M: 10 },
-  "gpt-4o-mini": { inputPer1M: 0.15, cachedInputPer1M: 0.075, outputPer1M: 0.60 },
-  "gpt-4.1": { inputPer1M: 2, cachedInputPer1M: 0.50, outputPer1M: 8 },
-  "gpt-4.1-mini": { inputPer1M: 0.40, cachedInputPer1M: 0.10, outputPer1M: 1.60 },
-  "gpt-4.1-nano": { inputPer1M: 0.10, cachedInputPer1M: 0.025, outputPer1M: 0.40 },
-  "o3": { inputPer1M: 2, cachedInputPer1M: 0.50, outputPer1M: 8 },
-  "o3-mini": { inputPer1M: 1.10, cachedInputPer1M: 0.55, outputPer1M: 4.40 },
-  "o4-mini": { inputPer1M: 1.10, cachedInputPer1M: 0.275, outputPer1M: 4.40 },
-  // Google Gemini
-  "gemini-2.5-pro": { inputPer1M: 1.25, cachedInputPer1M: 0.3125, outputPer1M: 10 },
-  "gemini-2.5-flash": { inputPer1M: 0.15, cachedInputPer1M: 0.0375, outputPer1M: 0.60 },
-  "gemini-2.0-flash": { inputPer1M: 0.10, cachedInputPer1M: 0.025, outputPer1M: 0.40 },
-};
+export const PRICING_SOURCE_URL =
+  "https://platform.claude.com/docs/en/docs/about-claude/pricing";
+export const PRICING_SOURCE_FETCHED_AT = "2026-04-18";
 
-/** Default fallback pricing when a model is not in the table (roughly mid-tier). */
-export const DEFAULT_MODEL_PRICING: ModelPricing = {
-  inputPer1M: 3,
-  cachedInputPer1M: 0.375,
-  outputPer1M: 15,
-};
+/** Cache-read is 0.1x input (90% discount for prompt reuse). */
+export const CACHE_READ_MULTIPLIER = 0.1;
+/** 5-minute cache-write is 1.25x input. */
+export const CACHE_WRITE_5M_MULTIPLIER = 1.25;
+/** 1-hour cache-write is 2.0x input. */
+export const CACHE_WRITE_1H_MULTIPLIER = 2.0;
 
 /**
- * Estimate API cost in cents for a given model and token counts.
- * Returns 0 if tokens are all zero.
+ * Request-level pricing modifiers that stack on top of the base rate.
+ * These come from Anthropic docs; OpenAI/Gemini entries ignore them.
+ *
+ *   Fast mode (Opus 4.6 beta):     6.0x all token categories
+ *   Data residency (us-only):      1.1x all token categories (Opus 4.6/4.7+)
+ *   Batch API:                     0.5x input + output (cache unchanged)
+ */
+export const FAST_MODE_MULTIPLIER = 6.0;
+export const US_DATA_RESIDENCY_MULTIPLIER = 1.1;
+export const BATCH_API_MULTIPLIER = 0.5;
+
+/** Request-level flags captured per cost event (nullable until adapters surface them). */
+export interface PricingModifiers {
+  fastMode?: boolean;
+  dataResidency?: "global" | "us-only";
+  batch?: boolean;
+}
+
+/**
+ * MODEL_API_PRICING
+ *
+ * Source: https://platform.claude.com/docs/en/docs/about-claude/pricing
+ * Fetched: 2026-04-18
+ *
+ * Anthropic docs (2026-04-18) confirm:
+ *   "Opus 4.7, Opus 4.6, and Sonnet 4.6 include the full 1M token context
+ *   window at standard pricing." No 1M-tier multiplier for current models.
+ *
+ * Older Opus 4 / 4.1 priced at $15 in / $75 out (long-context pricing). Kept
+ * for historical cost_events that still reference those model ids.
+ */
+const ANTHROPIC_SRC = PRICING_SOURCE_URL;
+const OPENAI_SRC = "https://openai.com/api/pricing/";
+const GEMINI_SRC = "https://ai.google.dev/gemini-api/docs/pricing";
+
+export const MODEL_API_PRICING: Record<string, ModelPricing> = {
+  // --- Anthropic (current) ---
+  "claude-opus-4-7": {
+    modelId: "claude-opus-4-7",
+    aliases: ["claude-opus-4-7[1m]"],
+    inputPer1M: 5,
+    outputPer1M: 25,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-opus-4-6": {
+    modelId: "claude-opus-4-6",
+    aliases: ["claude-opus-4-6[1m]"],
+    inputPer1M: 5,
+    outputPer1M: 25,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-sonnet-4-6": {
+    modelId: "claude-sonnet-4-6",
+    aliases: ["claude-sonnet-4-6[1m]"],
+    inputPer1M: 3,
+    outputPer1M: 15,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-sonnet-4-5": {
+    modelId: "claude-sonnet-4-5",
+    inputPer1M: 3,
+    outputPer1M: 15,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-opus-4-5": {
+    modelId: "claude-opus-4-5",
+    inputPer1M: 5,
+    outputPer1M: 25,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-haiku-4-5": {
+    modelId: "claude-haiku-4-5",
+    aliases: ["claude-haiku-4-5-20251001"],
+    inputPer1M: 1,
+    outputPer1M: 5,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  // --- Anthropic (historical, retained for legacy cost_events) ---
+  "claude-opus-4-1": {
+    modelId: "claude-opus-4-1",
+    inputPer1M: 15,
+    outputPer1M: 75,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-opus-4": {
+    modelId: "claude-opus-4",
+    inputPer1M: 15,
+    outputPer1M: 75,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-3-5-sonnet-20241022": {
+    modelId: "claude-3-5-sonnet-20241022",
+    inputPer1M: 3,
+    outputPer1M: 15,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-3-5-haiku-20241022": {
+    modelId: "claude-3-5-haiku-20241022",
+    inputPer1M: 0.8,
+    outputPer1M: 4,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-3-opus-20240229": {
+    modelId: "claude-3-opus-20240229",
+    inputPer1M: 15,
+    outputPer1M: 75,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "claude-3-haiku-20240307": {
+    modelId: "claude-3-haiku-20240307",
+    inputPer1M: 0.25,
+    outputPer1M: 1.25,
+    source: ANTHROPIC_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  // --- OpenAI ---
+  "gpt-4o": {
+    modelId: "gpt-4o",
+    inputPer1M: 2.5,
+    cacheReadPer1M: 1.25,
+    outputPer1M: 10,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "gpt-4o-mini": {
+    modelId: "gpt-4o-mini",
+    inputPer1M: 0.15,
+    cacheReadPer1M: 0.075,
+    outputPer1M: 0.6,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "gpt-4.1": {
+    modelId: "gpt-4.1",
+    inputPer1M: 2,
+    cacheReadPer1M: 0.5,
+    outputPer1M: 8,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "gpt-4.1-mini": {
+    modelId: "gpt-4.1-mini",
+    inputPer1M: 0.4,
+    cacheReadPer1M: 0.1,
+    outputPer1M: 1.6,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "gpt-4.1-nano": {
+    modelId: "gpt-4.1-nano",
+    inputPer1M: 0.1,
+    cacheReadPer1M: 0.025,
+    outputPer1M: 0.4,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "o3": {
+    modelId: "o3",
+    inputPer1M: 2,
+    cacheReadPer1M: 0.5,
+    outputPer1M: 8,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "o3-mini": {
+    modelId: "o3-mini",
+    inputPer1M: 1.1,
+    cacheReadPer1M: 0.55,
+    outputPer1M: 4.4,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "o4-mini": {
+    modelId: "o4-mini",
+    inputPer1M: 1.1,
+    cacheReadPer1M: 0.275,
+    outputPer1M: 4.4,
+    source: OPENAI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  // --- Google Gemini ---
+  "gemini-2.5-pro": {
+    modelId: "gemini-2.5-pro",
+    inputPer1M: 1.25,
+    cacheReadPer1M: 0.3125,
+    outputPer1M: 10,
+    source: GEMINI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "gemini-2.5-flash": {
+    modelId: "gemini-2.5-flash",
+    inputPer1M: 0.15,
+    cacheReadPer1M: 0.0375,
+    outputPer1M: 0.6,
+    source: GEMINI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+  "gemini-2.0-flash": {
+    modelId: "gemini-2.0-flash",
+    inputPer1M: 0.1,
+    cacheReadPer1M: 0.025,
+    outputPer1M: 0.4,
+    source: GEMINI_SRC,
+    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+  },
+};
+
+/** Alias → canonical modelId, built once at module load. */
+const MODEL_ALIAS_INDEX: Record<string, string> = (() => {
+  const idx: Record<string, string> = {};
+  for (const [canonical, entry] of Object.entries(MODEL_API_PRICING)) {
+    idx[canonical] = canonical;
+    for (const alias of entry.aliases ?? []) {
+      idx[alias] = canonical;
+    }
+  }
+  return idx;
+})();
+
+/**
+ * Resolve a raw model string to a canonical pricing entry, or null if unknown.
+ * Matches exact id, alias, and then the id with a `[...]` suffix stripped
+ * (so `claude-opus-4-6[1m]` still resolves when `[1m]` isn't an alias yet).
+ */
+export function resolveModelPricing(model: string): ModelPricing | null {
+  if (!model) return null;
+  const direct = MODEL_ALIAS_INDEX[model];
+  if (direct) return MODEL_API_PRICING[direct] ?? null;
+  const stripped = model.replace(/\[[^\]]*\]$/, "");
+  if (stripped !== model) {
+    const viaStripped = MODEL_ALIAS_INDEX[stripped];
+    if (viaStripped) return MODEL_API_PRICING[viaStripped] ?? null;
+  }
+  return null;
+}
+
+function effectiveCacheReadRate(p: ModelPricing): number {
+  return p.cacheReadPer1M ?? p.inputPer1M * CACHE_READ_MULTIPLIER;
+}
+
+function isOpus46Family(p: ModelPricing): boolean {
+  return p.modelId === "claude-opus-4-6";
+}
+
+function isOpus46Or47Family(p: ModelPricing): boolean {
+  return p.modelId === "claude-opus-4-6" || p.modelId === "claude-opus-4-7";
+}
+
+/**
+ * Estimate API cost in cents for the given model and token counts.
+ *
+ * Returns `null` when the model is not in the pricing table. Callers MUST
+ * surface null as "pricing unknown" (badge, `—`) rather than silently defaulting
+ * to mid-tier rates — silent fallback caused the undercount fixed in PAP-19.
+ *
+ * Modifier precedence (multiplicative, in order):
+ *   base → batch (input+output only) → data residency → fast mode
  */
 export function estimateApiCostCents(
   model: string,
   inputTokens: number,
   cachedInputTokens: number,
   outputTokens: number,
-): number {
-  const pricing = MODEL_API_PRICING[model] ?? DEFAULT_MODEL_PRICING;
-  const cost =
-    (inputTokens * pricing.inputPer1M +
-      cachedInputTokens * pricing.cachedInputPer1M +
-      outputTokens * pricing.outputPer1M) /
-    1_000_000;
-  // Convert USD to cents and round
-  return Math.round(cost * 100);
+  modifiers: PricingModifiers = {},
+): number | null {
+  const pricing = resolveModelPricing(model);
+  if (!pricing) return null;
+
+  const inputRate = pricing.inputPer1M;
+  const outputRate = pricing.outputPer1M;
+  const cacheReadRate = effectiveCacheReadRate(pricing);
+
+  // Apply Batch API (0.5x input + output; cache unchanged per Anthropic docs).
+  const batch = modifiers.batch === true;
+  const batchMult = batch ? BATCH_API_MULTIPLIER : 1;
+
+  // Data residency applies to Opus 4.6/4.7+ only per Anthropic docs.
+  const residencyEligible = isOpus46Or47Family(pricing);
+  const residencyMult =
+    residencyEligible && modifiers.dataResidency === "us-only"
+      ? US_DATA_RESIDENCY_MULTIPLIER
+      : 1;
+
+  // Fast mode is Opus 4.6 only today; stacks across all token categories.
+  const fastEligible = isOpus46Family(pricing);
+  const fastMult = fastEligible && modifiers.fastMode === true ? FAST_MODE_MULTIPLIER : 1;
+
+  const inputUsd = (inputTokens * inputRate * batchMult * residencyMult * fastMult) / 1_000_000;
+  const outputUsd =
+    (outputTokens * outputRate * batchMult * residencyMult * fastMult) / 1_000_000;
+  const cacheReadUsd =
+    (cachedInputTokens * cacheReadRate * residencyMult * fastMult) / 1_000_000;
+
+  return Math.round((inputUsd + outputUsd + cacheReadUsd) * 100);
 }

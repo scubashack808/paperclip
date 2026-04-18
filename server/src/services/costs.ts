@@ -1,7 +1,11 @@
 import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
-import { estimateApiCostCents } from "@paperclipai/shared";
+import {
+  estimateApiCostCents,
+  PRICING_SOURCE_FETCHED_AT,
+  PRICING_SOURCE_URL,
+} from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -147,10 +151,21 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             .groupBy(costEvents.model)
         : [];
 
-      const estimatedCost = modelRows.reduce(
-        (sum, m) => sum + estimateApiCostCents(m.model, Number(m.inputTokens), Number(m.cachedInputTokens), Number(m.outputTokens)),
-        0,
-      );
+      let estimatedCost = 0;
+      const unknownModels = new Set<string>();
+      for (const m of modelRows) {
+        const est = estimateApiCostCents(
+          m.model,
+          Number(m.inputTokens),
+          Number(m.cachedInputTokens),
+          Number(m.outputTokens),
+        );
+        if (est === null) {
+          if (m.model) unknownModels.add(m.model);
+        } else {
+          estimatedCost += est;
+        }
+      }
 
       return {
         companyId,
@@ -161,6 +176,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         inputTokens,
         cachedInputTokens,
         outputTokens,
+        unknownModelIds: Array.from(unknownModels).sort(),
+        pricingSourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+        pricingSourceUrl: PRICING_SOURCE_URL,
       };
     },
 
@@ -186,6 +204,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       const estimatedByAgent = new Map<string, number>();
       for (const row of agentModelRows) {
         const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
+        if (est === null) continue;
         estimatedByAgent.set(row.agentId, (estimatedByAgent.get(row.agentId) ?? 0) + est);
       }
 
@@ -254,9 +273,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       return rows.map((row) => ({
         ...row,
-        estimatedCostCents: row.costCents > 0
-          ? row.costCents
-          : estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens)),
+        estimatedCostCents:
+          row.costCents > 0
+            ? row.costCents
+            : (estimateApiCostCents(
+                row.model,
+                Number(row.inputTokens),
+                Number(row.cachedInputTokens),
+                Number(row.outputTokens),
+              ) ?? 0),
       }));
     },
 
@@ -281,6 +306,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       const estimatedByBiller = new Map<string, number>();
       for (const row of billerModelRows) {
         const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
+        if (est === null) continue;
         estimatedByBiller.set(row.biller, (estimatedByBiller.get(row.biller) ?? 0) + est);
       }
 
@@ -402,9 +428,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       return rows.map((row) => ({
         ...row,
-        estimatedCostCents: row.costCents > 0
-          ? row.costCents
-          : estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens)),
+        estimatedCostCents:
+          row.costCents > 0
+            ? row.costCents
+            : (estimateApiCostCents(
+                row.model,
+                Number(row.inputTokens),
+                Number(row.cachedInputTokens),
+                Number(row.outputTokens),
+              ) ?? 0),
       }));
     },
 
@@ -461,6 +493,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       for (const row of projectModelRows) {
         const key = row.projectId ?? "__null__";
         const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
+        if (est === null) continue;
         estimatedByProject.set(key, (estimatedByProject.get(key) ?? 0) + est);
       }
 

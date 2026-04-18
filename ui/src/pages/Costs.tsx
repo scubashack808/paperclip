@@ -704,6 +704,28 @@ export function Costs() {
                         </div>
                       </div>
                     ) : null}
+                    {(spendData?.summary.unknownModelIds?.length ?? 0) > 0 ? (
+                      <div className="border border-yellow-500/40 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
+                        Pricing unknown for{" "}
+                        <span className="font-mono">
+                          {(spendData?.summary.unknownModelIds ?? []).join(", ")}
+                        </span>
+                        . Tokens counted; estimate excludes these models until pricing is added.
+                      </div>
+                    ) : null}
+                    {spendData?.summary.pricingSourceFetchedAt ? (
+                      <div className="text-[11px] text-muted-foreground">
+                        Rates as of {spendData.summary.pricingSourceFetchedAt} —{" "}
+                        <a
+                          href={spendData.summary.pricingSourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                        >
+                          source
+                        </a>
+                      </div>
+                    ) : null}
                   </CardContent>
                 </Card>
 

@@ -1,7 +1,11 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
-import { estimateApiCostCents } from "@paperclipai/shared";
+import {
+  estimateApiCostCents,
+  PRICING_SOURCE_FETCHED_AT,
+  PRICING_SOURCE_URL,
+} from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
@@ -84,8 +88,10 @@ export function dashboardService(db: Db) {
       const cachedInputTokens = Number(costRow.cachedInputTokens);
       const outputTokens = Number(costRow.outputTokens);
 
-      // Compute per-model estimated cost for accurate shadow pricing
+      // Compute per-model estimated cost for accurate shadow pricing and track
+      // models we can't price (surfaced to the UI as "pricing unknown").
       let estimatedCostCents = monthSpendCents;
+      const unknownModels = new Set<string>();
       if (monthSpendCents === 0 && (inputTokens + cachedInputTokens + outputTokens) > 0) {
         const modelRows = await db
           .select({
@@ -98,10 +104,21 @@ export function dashboardService(db: Db) {
           .where(and(...monthConditions))
           .groupBy(costEvents.model);
 
-        estimatedCostCents = modelRows.reduce(
-          (sum, m) => sum + estimateApiCostCents(m.model, Number(m.inputTokens), Number(m.cachedInputTokens), Number(m.outputTokens)),
-          0,
-        );
+        let sum = 0;
+        for (const m of modelRows) {
+          const est = estimateApiCostCents(
+            m.model,
+            Number(m.inputTokens),
+            Number(m.cachedInputTokens),
+            Number(m.outputTokens),
+          );
+          if (est === null) {
+            if (m.model) unknownModels.add(m.model);
+          } else {
+            sum += est;
+          }
+        }
+        estimatedCostCents = sum;
       }
 
       const utilization =
@@ -127,6 +144,9 @@ export function dashboardService(db: Db) {
           inputTokens,
           cachedInputTokens,
           outputTokens,
+          unknownModelIds: Array.from(unknownModels).sort(),
+          pricingSourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
+          pricingSourceUrl: PRICING_SOURCE_URL,
         },
         pendingApprovals,
         budgets: {

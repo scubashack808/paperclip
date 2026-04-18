@@ -269,6 +269,15 @@ export function Dashboard() {
                     : data.costs.monthBudgetCents > 0
                       ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                       : "Unlimited budget"}
+                  {(data.costs.unknownModelIds?.length ?? 0) > 0 ? (
+                    <>
+                      {" · "}
+                      <span className="text-yellow-600 dark:text-yellow-400">
+                        pricing unknown for {data.costs.unknownModelIds.length} model
+                        {data.costs.unknownModelIds.length === 1 ? "" : "s"}
+                      </span>
+                    </>
+                  ) : null}
                 </span>
               }
             />
