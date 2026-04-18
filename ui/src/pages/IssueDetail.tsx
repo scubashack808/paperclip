@@ -1295,6 +1295,27 @@ export function IssueDetail() {
     updateChildIssue.mutate({ id, data });
   }, [updateChildIssue]);
 
+  const deleteChildIssue = useMutation({
+    mutationFn: (id: string) => issuesApi.remove(id),
+    onSuccess: () => {
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: ["issues", resolvedCompanyId] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
+      }
+      pushToast({ title: "Sub-issue deleted", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unable to delete sub-issue",
+        tone: "error",
+      });
+    },
+  });
+  const handleChildIssueDelete = useCallback((id: string) => {
+    deleteChildIssue.mutate(id);
+  }, [deleteChildIssue]);
+
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
       if (action === "approve") {
@@ -2436,6 +2457,7 @@ export function IssueDetail() {
             baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
             createIssueLabel="Sub-issue"
             onUpdateIssue={handleChildIssueUpdate}
+            onDeleteIssue={handleChildIssueDelete}
           />
         </div>
       ) : (
