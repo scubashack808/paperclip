@@ -45,6 +45,12 @@ export interface IssueAncestor {
   goal: IssueAncestorGoal | null;
 }
 
+export interface IssueOriginCompany {
+  id: string;
+  name: string;
+  logoUrl: string | null;
+}
+
 export interface IssueLabel {
   id: string;
   companyId: string;
@@ -198,6 +204,7 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  originCompany?: IssueOriginCompany | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;

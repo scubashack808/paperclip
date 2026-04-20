@@ -77,10 +77,16 @@ export function IssueRow({
           {issue.originKind === "cross_company" ? (
             <span
               className="ml-1.5 inline-flex shrink-0 items-center rounded-sm border border-border bg-muted px-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground align-middle"
-              title={issue.originId ? `Cross-posted from company ${issue.originId}` : "Cross-posted from another company"}
+              title={
+                issue.originCompany?.name
+                  ? `Cross-posted from ${issue.originCompany.name}`
+                  : issue.originId
+                    ? `Cross-posted from company ${issue.originId}`
+                    : "Cross-posted from another company"
+              }
               data-testid="issue-row-cross-company-badge"
             >
-              cross-post
+              {issue.originCompany?.name ? `from ${issue.originCompany.name}` : "cross-post"}
             </span>
           ) : null}
         </span>

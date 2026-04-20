@@ -32,6 +32,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  companyService,
   executionWorkspaceService,
   feedbackService,
   goalService,
@@ -303,6 +304,7 @@ export function issueRoutes(
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
+  const companiesSvc = companyService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
@@ -445,6 +447,61 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     return { isOriginAgentAccess: false };
+  }
+
+  type OriginCompanySummary = {
+    id: string;
+    name: string;
+    logoUrl: string | null;
+  };
+
+  async function resolveOriginCompanySummary(issue: {
+    originKind?: string | null;
+    originId?: string | null;
+  }): Promise<OriginCompanySummary | null> {
+    if (issue.originKind !== "cross_company") return null;
+    if (!issue.originId) return null;
+    try {
+      const company = await companiesSvc.getById(issue.originId);
+      if (!company) return null;
+      return { id: company.id, name: company.name, logoUrl: company.logoUrl ?? null };
+    } catch (err) {
+      logger.warn({ err, originId: issue.originId }, "failed to resolve origin company for issue");
+      return null;
+    }
+  }
+
+  async function enrichIssueWithOriginCompany<T extends { originKind?: string | null; originId?: string | null }>(
+    issue: T,
+  ): Promise<T & { originCompany: OriginCompanySummary | null }> {
+    const originCompany = await resolveOriginCompanySummary(issue);
+    return { ...issue, originCompany };
+  }
+
+  async function enrichIssueListWithOriginCompany<
+    T extends { originKind?: string | null; originId?: string | null },
+  >(items: T[]): Promise<Array<T & { originCompany: OriginCompanySummary | null }>> {
+    const uniqueIds = new Set<string>();
+    for (const it of items) {
+      if (it.originKind === "cross_company" && it.originId) uniqueIds.add(it.originId);
+    }
+    if (uniqueIds.size === 0) return items.map((it) => ({ ...it, originCompany: null }));
+    const byId = new Map<string, OriginCompanySummary>();
+    await Promise.all(
+      Array.from(uniqueIds).map(async (id) => {
+        try {
+          const company = await companiesSvc.getById(id);
+          if (company) byId.set(id, { id: company.id, name: company.name, logoUrl: company.logoUrl ?? null });
+        } catch (err) {
+          logger.warn({ err, originId: id }, "failed to resolve origin company for list enrichment");
+        }
+      }),
+    );
+    return items.map((it) => ({
+      ...it,
+      originCompany:
+        it.originKind === "cross_company" && it.originId ? byId.get(it.originId) ?? null : null,
+    }));
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -714,7 +771,8 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
     });
-    res.json(result);
+    const enriched = await enrichIssueListWithOriginCompany(result);
+    res.json(enriched);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -793,6 +851,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const originCompany = await resolveOriginCompanySummary(issue);
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -805,6 +864,7 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      originCompany,
     });
   });
 
@@ -832,6 +892,7 @@ export function issueRoutes(
       svc.listAttachments(issue.id),
     ]);
 
+    const originCompany = await resolveOriginCompanySummary(issue);
     res.json({
       issue: {
         id: issue.id,
@@ -848,6 +909,9 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         updatedAt: issue.updatedAt,
+        originKind: issue.originKind,
+        originId: issue.originId,
+        originCompany,
       },
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
@@ -1428,7 +1492,7 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
-    res.status(201).json(issue);
+    res.status(201).json(await enrichIssueWithOriginCompany(issue));
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
@@ -2021,7 +2085,8 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    const originCompany = await resolveOriginCompanySummary(issueResponse);
+    res.json({ ...issueResponse, originCompany, comment });
   });
 
   router.delete("/issues/:id", async (req, res) => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, issues } from "@paperclipai/db";
+import { activityLog, companies, issues } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -60,6 +60,23 @@ async function resolveCrossCompanyOriginId(
   }
 }
 
+async function resolveCompanyNamesByIds(
+  db: Db,
+  companyIds: string[],
+): Promise<Map<string, string>> {
+  if (companyIds.length === 0) return new Map();
+  try {
+    const rows = await db
+      .select({ id: companies.id, name: companies.name })
+      .from(companies)
+      .where(inArray(companies.id, companyIds));
+    return new Map(rows.map((r) => [r.id, r.name]));
+  } catch (err) {
+    logger.warn({ err, companyIds }, "failed to resolve company names for live event fan-out");
+    return new Map();
+  }
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -104,6 +121,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     input.companyId,
   );
   if (crossCompanyOriginId) {
+    const names = await resolveCompanyNamesByIds(db, [input.companyId, crossCompanyOriginId]);
     publishLiveEvent({
       companyId: crossCompanyOriginId,
       type: "activity.logged",
@@ -111,6 +129,9 @@ export async function logActivity(db: Db, input: LogActivityInput) {
         ...primaryPayload,
         foreign: true,
         targetCompanyId: input.companyId,
+        targetCompanyName: names.get(input.companyId) ?? null,
+        originCompanyId: crossCompanyOriginId,
+        originCompanyName: names.get(crossCompanyOriginId) ?? null,
       },
     });
   }
