@@ -5104,15 +5104,21 @@ export function heartbeatService(db: Db) {
       await appendRunEvent(cancelled, 1, {
         eventType: "lifecycle",
         stream: "system",
-        level: "warn",
-        message: "run cancelled",
+        level: terminateError ? "error" : "warn",
+        message: terminateError ? "run cancel failed -- process may still be alive" : "run cancelled",
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      if (!terminateError) {
+        await releaseIssueExecutionAndPromote(cancelled);
+      }
     }
 
-    runningProcesses.delete(run.id);
-    await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!terminateError) {
+      runningProcesses.delete(run.id);
+      await finalizeAgentStatus(run.agentId, "cancelled");
+      await startNextQueuedRunForAgent(run.agentId);
+    } else {
+      await finalizeAgentStatus(run.agentId, "failed");
+    }
     return cancelled;
   }
 
