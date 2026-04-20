@@ -18,9 +18,7 @@ import {
   issueDocuments,
   issueReadStates,
   issues,
-  costEvents,
   feedbackVotes,
-  financeEvents,
   labels,
   projectWorkspaces,
   projects,
@@ -1758,21 +1756,22 @@ export function issueService(db: Db) {
 
         // LOCAL FIX (scubashack808/paperclip): Clean up tables that reference
         // issues.id without ON DELETE CASCADE. Without this, deleting any issue
-        // that has been viewed, commented on, archived, voted on, or has cost/
-        // finance events will fail with a FK constraint violation (HTTP 500).
+        // that has been viewed, commented on, archived, or voted on will fail
+        // with a FK constraint violation (HTTP 500).
         //
-        // Upstream bug: these 6 tables lack { onDelete: "cascade" } in their
+        // Upstream bug: these 4 tables lack { onDelete: "cascade" } in their
         // schema definitions, unlike issue_labels, issue_attachments, etc. which
         // do have it. Tracked upstream but not yet fixed as of 2026-04-15.
         //
+        // Finance audit trail (cost_events, finance_events) is intentionally
+        // NOT hard-deleted here — migration 0058 switched those FKs to
+        // ON DELETE SET NULL so billing history survives issue deletion.
+        //
         // Safe to remove this block if upstream adds ON DELETE CASCADE to:
-        //   issue_read_states, issue_inbox_archives, issue_comments,
-        //   cost_events, finance_events, feedback_votes
+        //   issue_read_states, issue_inbox_archives, issue_comments, feedback_votes
         await tx.delete(issueReadStates).where(eq(issueReadStates.issueId, id));
         await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.issueId, id));
         await tx.delete(issueComments).where(eq(issueComments.issueId, id));
-        await tx.delete(costEvents).where(eq(costEvents.issueId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.issueId, id));
         await tx.delete(feedbackVotes).where(eq(feedbackVotes.issueId, id));
 
         // LOCAL FIX (scubashack808/paperclip): issues.parent_id is a self-FK

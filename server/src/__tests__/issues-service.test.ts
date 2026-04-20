@@ -6,8 +6,10 @@ import {
   activityLog,
   agents,
   companies,
+  costEvents,
   createDb,
   executionWorkspaces,
+  financeEvents,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -1590,6 +1592,8 @@ describeEmbeddedPostgres("issueService.remove parent/child cascade", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -1653,5 +1657,79 @@ describeEmbeddedPostgres("issueService.remove parent/child cascade", () => {
 
     const [child] = await db.select().from(issues).where(eq(issues.id, childId));
     expect(child?.parentId).toBeNull();
+  });
+
+  it("preserves cost_events and finance_events rows with issue_id nulled when the issue is deleted", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "FinanceTester",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with spend",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const costEventId = randomUUID();
+    const financeEventId = randomUUID();
+    const occurredAt = new Date();
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId,
+      issueId,
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      costCents: 1234,
+      occurredAt,
+    });
+    await db.insert(financeEvents).values({
+      id: financeEventId,
+      companyId,
+      agentId,
+      issueId,
+      eventKind: "llm_cost",
+      biller: "anthropic",
+      amountCents: 1234,
+      occurredAt,
+    });
+
+    const removed = await svc.remove(issueId);
+    expect(removed?.id).toBe(issueId);
+
+    const [cost] = await db.select().from(costEvents).where(eq(costEvents.id, costEventId));
+    expect(cost).toBeDefined();
+    expect(cost?.issueId).toBeNull();
+    expect(cost?.costCents).toBe(1234);
+    expect(cost?.companyId).toBe(companyId);
+    expect(cost?.agentId).toBe(agentId);
+
+    const [finance] = await db
+      .select()
+      .from(financeEvents)
+      .where(eq(financeEvents.id, financeEventId));
+    expect(finance).toBeDefined();
+    expect(finance?.issueId).toBeNull();
+    expect(finance?.amountCents).toBe(1234);
+    expect(finance?.companyId).toBe(companyId);
   });
 });
