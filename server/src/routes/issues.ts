@@ -434,13 +434,21 @@ export function issueRoutes(
   // cross-posted issues.
   async function actorIsLiveOriginAgentFor(
     req: Request,
-    issue: { companyId: string; originKind?: string | null; originId?: string | null },
+    issue: {
+      companyId: string;
+      originKind?: string | null;
+      originId?: string | null;
+      hiddenAt?: Date | string | null;
+    },
   ): Promise<boolean> {
     if (req.actor.type !== "agent") return false;
     if (!req.actor.agentId) return false;
     if (issue.originKind !== "cross_company") return false;
     if (!issue.originId) return false;
     if (req.actor.companyId !== issue.originId) return false;
+    // Soft-deleted issues are closed to the origin too — once the target
+    // hides/deletes, cross-tenant access stops. Prevents writes on a tombstone.
+    if (issue.hiddenAt) return false;
     const actorAgent = await agentsSvc.getById(req.actor.agentId);
     if (!actorAgent || actorAgent.companyId !== issue.originId) return false;
     const BLOCKED_STATUSES = new Set(["terminated", "pending_approval", "paused", "error"]);
@@ -977,22 +985,26 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    await assertCanAccessIssueIncludingOrigin(req, issue);
+    const { isOriginAgentAccess } = await assertCanAccessIssueIncludingOrigin(req, issue);
 
     const wakeCommentId =
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
         ? req.query.wakeCommentId.trim()
         : null;
 
+    // For origin-company agents, skip ancestor / project / goal lookups on the
+    // target company — they would leak target-internal structure (ancestor
+    // titles, OKR hierarchy, project names). Origin agents still get the issue
+    // itself, relations, comment cursor, and the wake comment.
     const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments] =
       await Promise.all([
-      resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
-      svc.getCommentCursor(issue.id),
-      wakeCommentId ? svc.getComment(wakeCommentId) : null,
-      svc.getRelationSummaries(issue.id),
-      svc.listAttachments(issue.id),
-    ]);
+        isOriginAgentAccess ? Promise.resolve({ project: null, goal: null }) : resolveIssueProjectAndGoal(issue),
+        isOriginAgentAccess ? Promise.resolve([]) : svc.getAncestors(issue.id),
+        svc.getCommentCursor(issue.id),
+        wakeCommentId ? svc.getComment(wakeCommentId) : null,
+        svc.getRelationSummaries(issue.id),
+        isOriginAgentAccess ? Promise.resolve([]) : svc.listAttachments(issue.id),
+      ]);
 
     const originCompany = await resolveOriginCompanySummary(issue);
     res.json({
@@ -1554,6 +1566,13 @@ export function issueRoutes(
     // pre-assign to, or structurally graft into the target company. The target
     // company's own routing and agents set all of this after the issue lands.
     if (crossCompanyContext.isForeignPost) {
+      // Defense-in-depth: explicitly reject origin fields if the caller tried to
+      // stamp them themselves. Zod's default strip removes unknown keys already,
+      // but if the validator ever gets widened to `.passthrough()` this catches it.
+      const body = req.body as Record<string, unknown>;
+      if (body.originKind !== undefined || body.originId !== undefined || body.originRunId !== undefined) {
+        throw forbidden("Cross-company posts cannot client-supply origin fields");
+      }
       // Fields that, when set to any non-default value, point at entities in some
       // company (assignees, parents, projects, goals, workspaces, blockers) or
       // alter target-company routing (status, requestDepth). The allowlisted
@@ -1602,8 +1621,10 @@ export function issueRoutes(
 
     // Idempotency for cross-company retries: if the same heartbeat run posts
     // the same title to the same target, return the prior issue rather than
-    // creating a duplicate. The target can still delete if wrong — but this
-    // prevents transient 502 retries from littering their queue.
+    // creating a duplicate. Best-effort pre-check — true concurrency (two
+    // identical requests simultaneously both passing the pre-check) can still
+    // race to create duplicates. Documented limitation; the target company
+    // can delete extras. Heartbeat-runs serialize retries in practice.
     if (
       crossCompanyContext.isForeignPost &&
       crossCompanyContext.originCompanyId &&
@@ -2419,6 +2440,21 @@ export function issueRoutes(
     res.json(released);
   });
 
+  // Project a comment row to a narrow shape for origin-company readers. Target-
+  // company agent/user UUIDs, runIds, and other internal identifiers must not
+  // leak across the tenant boundary.
+  function narrowCommentForOrigin(comment: Record<string, unknown>) {
+    return {
+      id: comment.id,
+      issueId: comment.issueId,
+      body: comment.body,
+      createdAt: comment.createdAt,
+      updatedAt: comment.updatedAt,
+      authoredBy:
+        comment.authorAgentId ? "agent" : comment.authorUserId ? "user" : "system",
+    };
+  }
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2426,7 +2462,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    await assertCanAccessIssueIncludingOrigin(req, issue);
+    const { isOriginAgentAccess: commentsIsOrigin } = await assertCanAccessIssueIncludingOrigin(req, issue);
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
@@ -2450,6 +2486,10 @@ export function issueRoutes(
       order,
       limit,
     });
+    if (commentsIsOrigin) {
+      res.json(comments.map((c) => narrowCommentForOrigin(c as unknown as Record<string, unknown>)));
+      return;
+    }
     res.json(comments);
   });
 
@@ -2461,10 +2501,14 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    await assertCanAccessIssueIncludingOrigin(req, issue);
+    const { isOriginAgentAccess: singleCommentIsOrigin } = await assertCanAccessIssueIncludingOrigin(req, issue);
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+    if (singleCommentIsOrigin) {
+      res.json(narrowCommentForOrigin(comment as unknown as Record<string, unknown>));
       return;
     }
     res.json(comment);
@@ -2759,9 +2803,14 @@ export function issueRoutes(
       entityId: currentIssue.id,
       details: {
         commentId: comment.id,
-        bodySnippet: comment.body.slice(0, 120),
+        // Snippet on the ORIGINAL body, not the stored body — for cross-company
+        // comments the stored body carries a provenance marker prefix that would
+        // otherwise eat the entire 120-char snippet with boilerplate, rendering
+        // the target-company activity feed useless.
+        bodySnippet: (req.body.body as string).slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        ...(isOriginAgentAccess ? { crossCompany: true, originCompanyId: req.actor.companyId ?? null } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
       },

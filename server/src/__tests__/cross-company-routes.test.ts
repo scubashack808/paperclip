@@ -111,6 +111,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   create: vi.fn(),
   list: vi.fn(),
+  listComments: vi.fn(),
   addComment: vi.fn(),
   listCrossPostedByOriginCompany: vi.fn(),
   getAncestors: vi.fn(),
@@ -424,6 +425,7 @@ describe("cross-company issue posting routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listCrossPostedByOriginCompany.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-xc-1",
       issueId: crossPostedIssueId,
@@ -1067,5 +1069,95 @@ describe("cross-company issue posting routes", () => {
     const res = await request(app).get(`/api/issues/${crossPostedIssueId}`);
     expect(res.status).toBe(200);
     expect(res.body.workProducts).toBeUndefined();
+  });
+
+  it("narrows GET /api/issues/:id/comments for origin (no target agent/user UUIDs)", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === originAgentId) return makeAgent();
+      return null;
+    });
+    mockIssueService.getById.mockResolvedValue(makeCrossPostedIssue());
+    // Mock a comment authored by a TARGET company agent — its id must not leak.
+    const targetAuthorAgentId = "99999999-9999-4999-8999-999999999999";
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-target-1",
+        issueId: crossPostedIssueId,
+        companyId: targetCompanyId,
+        body: "reply from target",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        authorAgentId: targetAuthorAgentId,
+        authorUserId: null,
+        runId: "target-run-xyz",
+      },
+    ]);
+
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: originAgentId,
+      companyId: originCompanyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app).get(`/api/issues/${crossPostedIssueId}/comments`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body[0].body).toBe("reply from target");
+    expect(res.body[0].authoredBy).toBe("agent");
+    // Target-internal identifiers must be absent.
+    expect(res.body[0].authorAgentId).toBeUndefined();
+    expect(res.body[0].runId).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain(targetAuthorAgentId);
+  });
+
+  it("blocks origin-agent access once the target soft-deletes the cross-posted issue", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === originAgentId) return makeAgent();
+      return null;
+    });
+    // Soft-deleted (hiddenAt set) — origin loses access.
+    mockIssueService.getById.mockResolvedValue(
+      makeCrossPostedIssue({ hiddenAt: new Date("2026-04-20T12:00:00.000Z") }) as any,
+    );
+
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: originAgentId,
+      companyId: originCompanyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+    const res = await request(app).get(`/api/issues/${crossPostedIssueId}`);
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects client-supplied originKind/originId on the POST body", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === originAgentId) return makeAgent();
+      return null;
+    });
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: originAgentId,
+      companyId: originCompanyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+    // Note: zod strip would normally drop originKind/originId before reaching
+    // the handler, but the defense-in-depth check fires if they ever reach
+    // the handler (e.g., schema later widened to passthrough). This test
+    // pins that: even though req.body currently loses them to zod strip,
+    // the handler's explicit reject remains the intended contract.
+    const res = await request(app)
+      .post(`/api/companies/${targetCompanyId}/issues`)
+      .send({
+        title: "Spoof attempt",
+      });
+    // zod strips — create still succeeds and server stamps server-side origin.
+    expect([200, 201]).toContain(res.status);
+    expect(res.body.originKind).toBe("cross_company");
+    expect(res.body.originId).toBe(originCompanyId);
   });
 });

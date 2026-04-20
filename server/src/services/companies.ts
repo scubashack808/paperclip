@@ -264,13 +264,16 @@ export function companyService(db: Db) {
         // Otherwise the issue lives on with a dangling origin pointer and any
         // future live-event fan-out targets a ghost companyId. We keep the
         // issue itself (it still belongs to its target company) but drop the
-        // origin association.
+        // origin association — including originRunId, which would otherwise
+        // dangle into a deleted heartbeatRuns tombstone after this same tx.
         await tx
           .update(issues)
-          .set({ originKind: "manual", originId: null })
+          .set({ originKind: "manual", originId: null, originRunId: null })
           .where(and(eq(issues.originKind, "cross_company"), eq(issues.originId, id)));
         // Also sweep any agent's cross-post allowlist that referenced this company.
-        // The permissions column is jsonb; use a JSONB array filter update.
+        // Guard with jsonb_typeof = 'array' so a malformed permissions row from
+        // a prior version (scalar / object instead of array) doesn't abort the
+        // whole company-delete transaction with a jsonb_array_elements error.
         await tx.execute(sql`
           UPDATE agents
           SET permissions = jsonb_set(
@@ -286,6 +289,7 @@ export function companyService(db: Db) {
             )
           )
           WHERE permissions ? 'allowedForeignCompanies'
+            AND jsonb_typeof(permissions->'allowedForeignCompanies') = 'array'
         `);
 
         // Delete from child tables in dependency order
