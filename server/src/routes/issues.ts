@@ -414,6 +414,39 @@ export function issueRoutes(
     return { isForeignPost: true, originCompanyId: req.actor.companyId };
   }
 
+  // Returns true if the actor is an origin-company agent of a cross-posted issue
+  // AND still holds the foreign-company allowlist grant. Cross-company access is
+  // revocable: removing the grant immediately blocks reads/comments on prior
+  // cross-posted issues.
+  async function actorIsLiveOriginAgentFor(
+    req: Request,
+    issue: { companyId: string; originKind?: string | null; originId?: string | null },
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent") return false;
+    if (!req.actor.agentId) return false;
+    if (issue.originKind !== "cross_company") return false;
+    if (!issue.originId) return false;
+    if (req.actor.companyId !== issue.originId) return false;
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== issue.originId) return false;
+    const allowed = actorAgent.permissions?.allowedForeignCompanies;
+    const allowList = Array.isArray(allowed) ? allowed : [];
+    return allowList.includes(issue.companyId);
+  }
+
+  async function assertCanAccessIssueIncludingOrigin(
+    req: Request,
+    issue: { companyId: string; originKind?: string | null; originId?: string | null },
+  ): Promise<{ isOriginAgentAccess: boolean }> {
+    if (req.actor.type === "agent" && req.actor.companyId !== issue.companyId) {
+      if (await actorIsLiveOriginAgentFor(req, issue)) {
+        return { isOriginAgentAccess: true };
+      }
+    }
+    assertCompanyAccess(req, issue.companyId);
+    return { isOriginAgentAccess: false };
+  }
+
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -745,7 +778,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCanAccessIssueIncludingOrigin(req, issue);
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -782,7 +815,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCanAccessIssueIncludingOrigin(req, issue);
 
     const wakeCommentId =
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
@@ -2148,7 +2181,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCanAccessIssueIncludingOrigin(req, issue);
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
@@ -2183,7 +2216,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCanAccessIssueIncludingOrigin(req, issue);
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
@@ -2345,8 +2378,16 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    const { isOriginAgentAccess } = await assertCanAccessIssueIncludingOrigin(req, issue);
+    // Origin-company agents can post comments but cannot trigger reopen/interrupt
+    // on the target company's issue (they have no checkout ownership there).
+    if (isOriginAgentAccess) {
+      if (req.body.reopen === true || req.body.interrupt === true) {
+        res.status(403).json({ error: "Origin-company agents cannot reopen or interrupt foreign issues" });
+        return;
+      }
+    }
+    if (!isOriginAgentAccess && !(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
