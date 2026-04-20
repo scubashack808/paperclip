@@ -74,6 +74,15 @@ export function IssueRow({
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
           {issue.title}{titleSuffix}
+          {issue.originKind === "cross_company" ? (
+            <span
+              className="ml-1.5 inline-flex shrink-0 items-center rounded-sm border border-border bg-muted px-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground align-middle"
+              title={issue.originId ? `Cross-posted from company ${issue.originId}` : "Cross-posted from another company"}
+              data-testid="issue-row-cross-company-badge"
+            >
+              cross-post
+            </span>
+          ) : null}
         </span>
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
           {desktopLeadingSpacer ? (
