@@ -898,7 +898,17 @@ describe("cross-company issue posting routes", () => {
       if (id === originAgentId) return makeAgent();
       return null;
     });
-    mockIssueService.getById.mockResolvedValue(makeCrossPostedIssue());
+    // Simulate the target tenant later attaching the cross-post to its own
+    // project/goal/parent and assigning to a target-tenant agent + user.
+    mockIssueService.getById.mockResolvedValue(
+      makeCrossPostedIssue({
+        projectId: "11111111-1111-4111-8111-111111111111",
+        goalId: "22222222-2222-4222-8222-222222222222",
+        parentId: "33333333-3333-4333-8333-333333333333",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+        assigneeUserId: "target-internal-user-id",
+      }) as any,
+    );
     dbSelectRows.current = [
       { id: originCompanyId, name: "Origin Co", logoAssetId: null },
     ];
@@ -918,6 +928,8 @@ describe("cross-company issue posting routes", () => {
     expect(res.body.id).toBe(crossPostedIssueId);
     expect(res.body.title).toBeDefined();
     expect(res.body.originCompany).toBeDefined();
+    // Origin needs a coarse "is this picked up?" signal; full UUID stays in target.
+    expect(res.body.assigned).toBe(true);
     // Absence: target-internal structure must NOT be in the response for origin.
     expect(res.body.currentExecutionWorkspace).toBeUndefined();
     expect(res.body.workProducts).toBeUndefined();
@@ -925,6 +937,14 @@ describe("cross-company issue posting routes", () => {
     expect(res.body.mentionedProjects).toBeUndefined();
     expect(res.body.blockedBy).toBeUndefined();
     expect(res.body.blocks).toBeUndefined();
+    // Target-tenant internal UUIDs that would leak structure must not be in
+    // the projection — neither the project/goal/parent identifiers, nor the
+    // target-side assignee identities.
+    expect(res.body.projectId).toBeUndefined();
+    expect(res.body.goalId).toBeUndefined();
+    expect(res.body.parentId).toBeUndefined();
+    expect(res.body.assigneeAgentId).toBeUndefined();
+    expect(res.body.assigneeUserId).toBeUndefined();
   });
 
   it("allows a CEO agent to clear the allowlist with an empty array", async () => {
@@ -1159,5 +1179,188 @@ describe("cross-company issue posting routes", () => {
     expect([200, 201]).toContain(res.status);
     expect(res.body.originKind).toBe("cross_company");
     expect(res.body.originId).toBe(originCompanyId);
+  });
+
+  it("narrows GET /issues/:id/heartbeat-context wakeComment for origin (no target author/run UUIDs)", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === originAgentId) return makeAgent();
+      return null;
+    });
+    mockIssueService.getById.mockResolvedValue(makeCrossPostedIssue());
+    mockIssueService.getCommentCursor.mockResolvedValue({ totalComments: 1, latestCommentId: "c-1", latestCommentAt: new Date() });
+    // The wake comment was authored by a target-tenant agent. Its raw row carries
+    // authorAgentId/authorUserId/runId — those must be stripped for origin.
+    mockIssueService.getComment.mockResolvedValue({
+      id: "wake-comment-1",
+      issueId: crossPostedIssueId,
+      body: "target-only thoughts",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "55555555-5555-4555-8555-555555555555", // target-tenant
+      authorUserId: null,
+      runId: "target-run-id",
+    } as any);
+    // Even if the target later created blocking relationships against its own
+    // internal issues, the heartbeat-context for origin must hide them.
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        { id: "internal-1", identifier: "TGT-99", title: "internal target issue", status: "todo", priority: "high" },
+      ],
+      blocks: [
+        { id: "internal-2", identifier: "TGT-100", title: "another internal target issue", status: "todo", priority: "high" },
+      ],
+    } as any);
+    dbSelectRows.current = [{ id: originCompanyId, name: "Origin Co", logoAssetId: null }];
+
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: originAgentId,
+      companyId: originCompanyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app).get(`/api/issues/${crossPostedIssueId}/heartbeat-context?wakeCommentId=wake-comment-1`);
+
+    expect(res.status).toBe(200);
+    // wakeComment is narrowed: only id/issueId/body/timestamps/authoredBy stay.
+    expect(res.body.wakeComment).toBeDefined();
+    expect(res.body.wakeComment.body).toBe("target-only thoughts");
+    expect(res.body.wakeComment.authoredBy).toBe("agent");
+    expect(res.body.wakeComment.authorAgentId).toBeUndefined();
+    expect(res.body.wakeComment.authorUserId).toBeUndefined();
+    expect(res.body.wakeComment.runId).toBeUndefined();
+    // Issue payload no longer leaks blockedBy/blocks for origin.
+    expect(res.body.issue.blockedBy).toBeUndefined();
+    expect(res.body.issue.blocks).toBeUndefined();
+    // And no project/goal/parent UUIDs sneak through either.
+    expect(res.body.issue.projectId).toBeUndefined();
+    expect(res.body.issue.goalId).toBeUndefined();
+    expect(res.body.issue.parentId).toBeUndefined();
+    expect(res.body.issue.assigneeAgentId).toBeUndefined();
+    expect(res.body.issue.assigneeUserId).toBeUndefined();
+    // Ancestors / project / goal / attachments are also empty for origin.
+    expect(res.body.ancestors).toEqual([]);
+    expect(res.body.project).toBeNull();
+    expect(res.body.goal).toBeNull();
+    expect(res.body.attachments).toEqual([]);
+  });
+
+  it("rejects cross-company POST with title above MAX_CROSS_COMPANY_TITLE_LENGTH (413)", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === originAgentId) return makeAgent();
+      return null;
+    });
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: originAgentId,
+      companyId: originCompanyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const oversizedTitle = "x".repeat(501);
+    const res = await request(app)
+      .post(`/api/companies/${targetCompanyId}/issues`)
+      .send({ title: oversizedTitle });
+
+    expect(res.status).toBe(413);
+    expect(res.body.field).toBe("title");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-company POST with description above MAX_CROSS_COMPANY_DESCRIPTION_LENGTH (413)", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === originAgentId) return makeAgent();
+      return null;
+    });
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: originAgentId,
+      companyId: originCompanyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const oversizedDescription = "x".repeat(32_769);
+    const res = await request(app)
+      .post(`/api/companies/${targetCompanyId}/issues`)
+      .send({ title: "fine", description: oversizedDescription });
+
+    expect(res.status).toBe(413);
+    expect(res.body.field).toBe("description");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-company comment with body above MAX_CROSS_COMPANY_COMMENT_LENGTH (413)", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === originAgentId) return makeAgent();
+      return null;
+    });
+    mockIssueService.getById.mockResolvedValue(makeCrossPostedIssue());
+    dbSelectRows.current = [{ id: originCompanyId, name: "Origin Co", logoAssetId: null }];
+
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: originAgentId,
+      companyId: originCompanyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const oversizedBody = "x".repeat(65_537);
+    const res = await request(app)
+      .post(`/api/issues/${crossPostedIssueId}/comments`)
+      .send({ body: oversizedBody });
+
+    expect(res.status).toBe(413);
+    expect(res.body.field).toBe("body");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("does NOT cap same-tenant comments — only cross-tenant comments are size-capped", async () => {
+    // A target-tenant agent posting a comment on its own issue. No cross-company
+    // origin context, so the body cap doesn't apply (handler only enforces it
+    // on isOriginAgentAccess).
+    const targetAgentId = "66666666-6666-4666-8666-666666666666";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === targetAgentId) {
+        return {
+          ...makeAgent(),
+          id: targetAgentId,
+          companyId: targetCompanyId,
+          status: "idle",
+          permissions: { canCreateAgents: false, allowedForeignCompanies: [] },
+        };
+      }
+      return null;
+    });
+    mockIssueService.getById.mockResolvedValue(
+      makeCrossPostedIssue({
+        // For this assertion the origin/cross_company stamping is irrelevant —
+        // what matters is that the actor is in the same tenant as the issue.
+        assigneeAgentId: targetAgentId,
+        executionWorkspaceId: null,
+      }) as any,
+    );
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    dbSelectRows.current = [{ id: originCompanyId, name: "Origin Co", logoAssetId: null }];
+
+    const app = await createIssueRoutesApp({
+      type: "agent",
+      agentId: targetAgentId,
+      companyId: targetCompanyId,
+      source: "agent_key",
+      runId: "run-target-1",
+    });
+
+    // Same caller, oversized body would be rejected if cross-tenant. Here it
+    // must pass through to the schema layer (and from there into the service);
+    // we assert the body cap branch did NOT fire (no 413).
+    const oversizedButSameTenant = "x".repeat(65_537);
+    const res = await request(app)
+      .post(`/api/issues/${crossPostedIssueId}/comments`)
+      .send({ body: oversizedButSameTenant });
+    expect(res.status).not.toBe(413);
   });
 });

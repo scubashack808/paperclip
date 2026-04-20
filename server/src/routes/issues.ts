@@ -69,6 +69,17 @@ import {
 } from "../services/issue-execution-policy.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+// Cross-tenant body-size caps. The shared issue/comment schemas leave title,
+// description, and comment bodies effectively unbounded (subject only to the
+// 10MB express body limit) because same-tenant callers operate inside a shared
+// trust boundary. Cross-company callers do not — an origin agent holding an
+// allowlist grant must not be able to mint multi-megabyte issue descriptions or
+// comments into a target tenant the target cannot defend against (the target
+// cannot revoke the origin's grant, only origin's CEO can).
+const MAX_CROSS_COMPANY_TITLE_LENGTH = 500;
+const MAX_CROSS_COMPANY_DESCRIPTION_LENGTH = 32_768;
+const MAX_CROSS_COMPANY_COMMENT_LENGTH = 65_536;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -920,6 +931,13 @@ export function issueRoutes(
     // title, description, status, priority, assignee ids, and fetch comments.
     if (isOriginAgentAccess) {
       const originCompany = await resolveOriginCompanySummary(issue);
+      // projectId/goalId/parentId are deliberately omitted — they are
+      // target-tenant internal UUIDs that would let the origin enumerate target
+      // structure if the target ever attaches the cross-post to its own
+      // project/goal/parent. Assignee UUIDs are reduced to a boolean for the
+      // same reason: the origin needs to know "has someone picked this up?",
+      // not the target agent or user identity. createdBy* are kept because
+      // they are stamped at cross-post creation with the origin actor.
       res.json({
         id: issue.id,
         identifier: issue.identifier,
@@ -928,11 +946,7 @@ export function issueRoutes(
         status: issue.status,
         priority: issue.priority,
         companyId: issue.companyId,
-        projectId: issue.projectId,
-        goalId: issue.goalId,
-        parentId: issue.parentId,
-        assigneeAgentId: issue.assigneeAgentId,
-        assigneeUserId: issue.assigneeUserId,
+        assigned: Boolean(issue.assigneeAgentId || issue.assigneeUserId),
         createdByAgentId: issue.createdByAgentId,
         createdByUserId: issue.createdByUserId,
         issueNumber: issue.issueNumber,
@@ -992,41 +1006,65 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    // For origin-company agents, skip ancestor / project / goal lookups on the
-    // target company — they would leak target-internal structure (ancestor
-    // titles, OKR hierarchy, project names). Origin agents still get the issue
-    // itself, relations, comment cursor, and the wake comment.
+    // For origin-company agents, skip ancestor / project / goal / relation /
+    // attachment lookups on the target company — they would leak target-internal
+    // structure (ancestor titles, OKR hierarchy, project names, target-side
+    // blocker issue identifiers/titles/assignees, attachment contents). Origin
+    // agents still get the issue itself, comment cursor, and the wake comment
+    // (narrowed to drop target-tenant author/run UUIDs).
     const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments] =
       await Promise.all([
         isOriginAgentAccess ? Promise.resolve({ project: null, goal: null }) : resolveIssueProjectAndGoal(issue),
         isOriginAgentAccess ? Promise.resolve([]) : svc.getAncestors(issue.id),
         svc.getCommentCursor(issue.id),
         wakeCommentId ? svc.getComment(wakeCommentId) : null,
-        svc.getRelationSummaries(issue.id),
+        isOriginAgentAccess
+          ? Promise.resolve({ blockedBy: [], blocks: [] })
+          : svc.getRelationSummaries(issue.id),
         isOriginAgentAccess ? Promise.resolve([]) : svc.listAttachments(issue.id),
       ]);
 
     const originCompany = await resolveOriginCompanySummary(issue);
+    const issuePayload = isOriginAgentAccess
+      ? {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          description: issue.description,
+          status: issue.status,
+          priority: issue.priority,
+          updatedAt: issue.updatedAt,
+          originKind: issue.originKind,
+          originId: issue.originId,
+          originCompany,
+        }
+      : {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          description: issue.description,
+          status: issue.status,
+          priority: issue.priority,
+          projectId: issue.projectId,
+          goalId: goal?.id ?? issue.goalId,
+          parentId: issue.parentId,
+          blockedBy: relations.blockedBy,
+          blocks: relations.blocks,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          updatedAt: issue.updatedAt,
+          originKind: issue.originKind,
+          originId: issue.originId,
+          originCompany,
+        };
+    const wakeCommentPayload =
+      wakeComment && wakeComment.issueId === issue.id
+        ? isOriginAgentAccess
+          ? narrowCommentForOrigin(wakeComment as unknown as Record<string, unknown>)
+          : wakeComment
+        : null;
     res.json({
-      issue: {
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        description: issue.description,
-        status: issue.status,
-        priority: issue.priority,
-        projectId: issue.projectId,
-        goalId: goal?.id ?? issue.goalId,
-        parentId: issue.parentId,
-        blockedBy: relations.blockedBy,
-        blocks: relations.blocks,
-        assigneeAgentId: issue.assigneeAgentId,
-        assigneeUserId: issue.assigneeUserId,
-        updatedAt: issue.updatedAt,
-        originKind: issue.originKind,
-        originId: issue.originId,
-        originCompany,
-      },
+      issue: issuePayload,
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
         identifier: ancestor.identifier,
@@ -1052,10 +1090,7 @@ export function issueRoutes(
           }
         : null,
       commentCursor,
-      wakeComment:
-        wakeComment && wakeComment.issueId === issue.id
-          ? wakeComment
-          : null,
+      wakeComment: wakeCommentPayload,
       attachments: attachments.map((a) => ({
         id: a.id,
         filename: a.originalFilename,
@@ -1610,6 +1645,27 @@ export function issueRoutes(
         throw forbidden(
           `Cross-company issue posts cannot set: ${offenders.join(", ")}. Target company routes and agents pick up cross-posts with a clean slate.`,
         );
+      }
+      // Cap body sizes for cross-tenant calls — see MAX_CROSS_COMPANY_* constants.
+      const titleLen = typeof req.body.title === "string" ? req.body.title.length : 0;
+      const descLen = typeof req.body.description === "string" ? req.body.description.length : 0;
+      if (titleLen > MAX_CROSS_COMPANY_TITLE_LENGTH) {
+        res.status(413).json({
+          error: `Cross-company issue title exceeds maximum of ${MAX_CROSS_COMPANY_TITLE_LENGTH} characters`,
+          field: "title",
+          maxLength: MAX_CROSS_COMPANY_TITLE_LENGTH,
+          actualLength: titleLen,
+        });
+        return;
+      }
+      if (descLen > MAX_CROSS_COMPANY_DESCRIPTION_LENGTH) {
+        res.status(413).json({
+          error: `Cross-company issue description exceeds maximum of ${MAX_CROSS_COMPANY_DESCRIPTION_LENGTH} characters`,
+          field: "description",
+          maxLength: MAX_CROSS_COMPANY_DESCRIPTION_LENGTH,
+          actualLength: descLen,
+        });
+        return;
       }
     }
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
@@ -2678,6 +2734,16 @@ export function issueRoutes(
       // Origin agents cannot carry structural mutations through a comment either —
       // the comment route schema allows only `body/reopen/interrupt`, so we are
       // already covered, but be explicit about the allowlist.
+      const bodyLen = typeof req.body.body === "string" ? req.body.body.length : 0;
+      if (bodyLen > MAX_CROSS_COMPANY_COMMENT_LENGTH) {
+        res.status(413).json({
+          error: `Cross-company comment body exceeds maximum of ${MAX_CROSS_COMPANY_COMMENT_LENGTH} characters`,
+          field: "body",
+          maxLength: MAX_CROSS_COMPANY_COMMENT_LENGTH,
+          actualLength: bodyLen,
+        });
+        return;
+      }
     }
     if (!isOriginAgentAccess && !(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
