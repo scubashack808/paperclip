@@ -527,10 +527,20 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
+      // Merge on top of existing permissions so callers that omit a field do not
+      // silently clear it. Only fields explicitly present in `permissions` override.
+      const merged: Record<string, unknown> = {
+        ...(existing.permissions ?? {}),
+        canCreateAgents: permissions.canCreateAgents,
+      };
+      if (permissions.allowedForeignCompanies !== undefined) {
+        merged.allowedForeignCompanies = permissions.allowedForeignCompanies;
+      }
+
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
+          permissions: normalizeAgentPermissions(merged, existing.role),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

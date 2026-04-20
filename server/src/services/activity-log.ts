@@ -122,11 +122,23 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   );
   if (crossCompanyOriginId) {
     const names = await resolveCompanyNamesByIds(db, [input.companyId, crossCompanyOriginId]);
+    // Redacted mirror envelope. The full `details` payload stays on the target
+    // company's bus only — this mirror is broadcast to every origin-company WS
+    // subscriber (board users, non-granted agents). Anything sensitive
+    // (comment bodySnippets, document titles, approval payloads, work-product
+    // metadata) must NOT appear here. Origin-side consumers that need the full
+    // detail must re-fetch the issue through the normal cross-company read
+    // path — which is authorized per-agent via the allowlist grant check.
     publishLiveEvent({
       companyId: crossCompanyOriginId,
       type: "activity.logged",
       payload: {
-        ...primaryPayload,
+        actorType: input.actorType,
+        // Intentionally NOT including actorId/agentId/runId/details — those are
+        // target-company identifiers and potentially sensitive payload.
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
         foreign: true,
         targetCompanyId: input.companyId,
         targetCompanyName: names.get(input.companyId) ?? null,

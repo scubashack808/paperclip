@@ -1708,16 +1708,42 @@ export function agentRoutes(db: Db) {
         await assertBoardCanManageAgentsForCompany(req, existing.companyId);
       }
 
-      const requested = req.body.allowedForeignCompanies as string[];
+      const MAX_ALLOWLIST_SIZE = 50;
+      const rawRequested = req.body.allowedForeignCompanies as string[];
+      // Dedupe first so the cap applies to unique entries.
+      const requested = Array.from(new Set(rawRequested));
+      if (requested.length > MAX_ALLOWLIST_SIZE) {
+        res.status(422).json({
+          error: `Cross-company allowlist capped at ${MAX_ALLOWLIST_SIZE} companies`,
+        });
+        return;
+      }
       // An agent cannot be granted permission to cross-post to its own company.
       if (requested.includes(existing.companyId)) {
         res.status(422).json({ error: "Cannot grant cross-posting to the agent's own company" });
         return;
       }
+      // Verify every requested company actually exists before persisting. Accepting
+      // ghost UUIDs creates silent cross-team drift.
+      if (requested.length > 0) {
+        const existingCompanies = await db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(inArray(companies.id, requested));
+        const known = new Set(existingCompanies.map((row) => row.id));
+        const unknown = requested.filter((c) => !known.has(c));
+        if (unknown.length > 0) {
+          res.status(422).json({
+            error: "Some companies do not exist",
+            unknownCompanyIds: unknown,
+          });
+          return;
+        }
+      }
 
       const agent = await svc.updatePermissions(id, {
         canCreateAgents: Boolean(existing.permissions?.canCreateAgents),
-        allowedForeignCompanies: Array.from(new Set(requested)),
+        allowedForeignCompanies: requested,
       });
       if (!agent) {
         res.status(404).json({ error: "Agent not found" });

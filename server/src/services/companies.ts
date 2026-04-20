@@ -259,6 +259,35 @@ export function companyService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        // Cross-company cleanup: any OTHER company's cross-posted issue that
+        // claims this company as its origin needs its origin stamp stripped.
+        // Otherwise the issue lives on with a dangling origin pointer and any
+        // future live-event fan-out targets a ghost companyId. We keep the
+        // issue itself (it still belongs to its target company) but drop the
+        // origin association.
+        await tx
+          .update(issues)
+          .set({ originKind: "manual", originId: null })
+          .where(and(eq(issues.originKind, "cross_company"), eq(issues.originId, id)));
+        // Also sweep any agent's cross-post allowlist that referenced this company.
+        // The permissions column is jsonb; use a JSONB array filter update.
+        await tx.execute(sql`
+          UPDATE agents
+          SET permissions = jsonb_set(
+            permissions,
+            '{allowedForeignCompanies}',
+            COALESCE(
+              (
+                SELECT jsonb_agg(elem)
+                FROM jsonb_array_elements_text(permissions->'allowedForeignCompanies') elem
+                WHERE elem <> ${id}
+              ),
+              '[]'::jsonb
+            )
+          )
+          WHERE permissions ? 'allowedForeignCompanies'
+        `);
+
         // Delete from child tables in dependency order
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
