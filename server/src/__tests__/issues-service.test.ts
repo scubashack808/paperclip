@@ -1573,3 +1573,85 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     ]);
   });
 });
+
+describeEmbeddedPostgres("issueService.remove parent/child cascade", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-remove-cascade-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("promotes grandchildren up to the deleted issue's parent instead of failing on the self-FK", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const rootId = randomUUID();
+    const subId = randomUUID();
+    const grandChildId = randomUUID();
+    await db.insert(issues).values([
+      { id: rootId, companyId, title: "Root", status: "todo", priority: "medium" },
+      { id: subId, companyId, parentId: rootId, title: "Sub", status: "todo", priority: "medium" },
+      { id: grandChildId, companyId, parentId: subId, title: "Grandchild", status: "todo", priority: "medium" },
+    ]);
+
+    const removed = await svc.remove(subId);
+    expect(removed?.id).toBe(subId);
+
+    const survivors = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    const surviving = new Map(survivors.map((row) => [row.id, row]));
+    expect(surviving.has(subId)).toBe(false);
+    expect(surviving.get(grandChildId)?.parentId).toBe(rootId);
+    expect(surviving.get(rootId)?.parentId).toBeNull();
+  });
+
+  it("promotes children to null when deleting a top-level issue with sub-issues", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(issues).values([
+      { id: rootId, companyId, title: "Root", status: "todo", priority: "medium" },
+      { id: childId, companyId, parentId: rootId, title: "Child", status: "todo", priority: "medium" },
+    ]);
+
+    const removed = await svc.remove(rootId);
+    expect(removed?.id).toBe(rootId);
+
+    const [child] = await db.select().from(issues).where(eq(issues.id, childId));
+    expect(child?.parentId).toBeNull();
+  });
+});

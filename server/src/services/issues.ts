@@ -1775,6 +1775,21 @@ export function issueService(db: Db) {
         await tx.delete(financeEvents).where(eq(financeEvents.issueId, id));
         await tx.delete(feedbackVotes).where(eq(feedbackVotes.issueId, id));
 
+        // LOCAL FIX (scubashack808/paperclip): issues.parent_id is a self-FK
+        // with no ON DELETE clause, so deleting an issue that has children
+        // (sub-issues) fails with a FK constraint violation. Promote direct
+        // children up to the deleted issue's own parent (so grandchildren are
+        // preserved as siblings of their former parent) before removing.
+        const [targetRow] = await tx
+          .select({ parentId: issues.parentId })
+          .from(issues)
+          .where(eq(issues.id, id));
+        const promotedParentId = targetRow?.parentId ?? null;
+        await tx
+          .update(issues)
+          .set({ parentId: promotedParentId })
+          .where(eq(issues.parentId, id));
+
         const removedIssue = await tx
           .delete(issues)
           .where(eq(issues.id, id))
