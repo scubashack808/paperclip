@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, issues } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -34,6 +35,31 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+async function resolveCrossCompanyOriginId(
+  db: Db,
+  entityType: string,
+  entityId: string,
+  companyId: string,
+): Promise<string | null> {
+  if (entityType !== "issue") return null;
+  if (!entityId) return null;
+  try {
+    const [row] = await db
+      .select({ originKind: issues.originKind, originId: issues.originId })
+      .from(issues)
+      .where(eq(issues.id, entityId))
+      .limit(1);
+    if (!row) return null;
+    if (row.originKind !== "cross_company") return null;
+    if (!row.originId) return null;
+    if (row.originId === companyId) return null;
+    return row.originId;
+  } catch (err) {
+    logger.warn({ err, entityId }, "failed to resolve cross-company origin for live event fan-out");
+    return null;
+  }
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -54,20 +80,40 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     details: redactedDetails,
   });
 
+  const primaryPayload = {
+    actorType: input.actorType,
+    actorId: input.actorId,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    agentId: input.agentId ?? null,
+    runId: input.runId ?? null,
+    details: redactedDetails,
+  };
+
   publishLiveEvent({
     companyId: input.companyId,
     type: "activity.logged",
-    payload: {
-      actorType: input.actorType,
-      actorId: input.actorId,
-      action: input.action,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
-      details: redactedDetails,
-    },
+    payload: primaryPayload,
   });
+
+  const crossCompanyOriginId = await resolveCrossCompanyOriginId(
+    db,
+    input.entityType,
+    input.entityId,
+    input.companyId,
+  );
+  if (crossCompanyOriginId) {
+    publishLiveEvent({
+      companyId: crossCompanyOriginId,
+      type: "activity.logged",
+      payload: {
+        ...primaryPayload,
+        foreign: true,
+        targetCompanyId: input.companyId,
+      },
+    });
+  }
 
   if (_pluginEventBus && PLUGIN_EVENT_SET.has(input.action)) {
     const event: PluginEvent = {
