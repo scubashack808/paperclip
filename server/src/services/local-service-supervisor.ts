@@ -290,6 +290,22 @@ export async function touchLocalServiceRegistryRecord(
   return next;
 }
 
+export class TerminationError extends Error {
+  readonly code: string | undefined;
+  constructor(message: string, opts?: { code?: string; cause?: unknown }) {
+    super(message, opts?.cause ? { cause: opts.cause } : undefined);
+    this.name = "TerminationError";
+    this.code = opts?.code;
+  }
+}
+
+function errnoCode(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err && typeof (err as { code?: unknown }).code === "string") {
+    return (err as { code: string }).code;
+  }
+  return undefined;
+}
+
 export async function terminateLocalService(
   record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">,
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
@@ -308,11 +324,22 @@ export async function terminateLocalService(
       process.kill(record.pid, signal);
     }
   } catch (err) {
-    logger.info(
-      { pid: record.pid, processGroupId: record.processGroupId, signal, err },
-      "terminate.early_exit",
+    const code = errnoCode(err);
+    if (code === "ESRCH") {
+      logger.info(
+        { pid: record.pid, processGroupId: record.processGroupId, signal },
+        "terminate.early_exit",
+      );
+      return;
+    }
+    logger.warn(
+      { pid: record.pid, processGroupId: record.processGroupId, signal, code, err },
+      "terminate.signal_failed",
     );
-    return;
+    throw new TerminationError(`failed to deliver ${signal} to pid ${record.pid}: ${code ?? "unknown"}`, {
+      code,
+      cause: err,
+    });
   }
 
   const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
@@ -351,10 +378,22 @@ export async function terminateLocalService(
       process.kill(record.pid, "SIGKILL");
     }
   } catch (err) {
+    const code = errnoCode(err);
+    if (code === "ESRCH") {
+      logger.info(
+        { pid: record.pid, processGroupId: record.processGroupId },
+        "terminate.sigkill_already_gone",
+      );
+      return;
+    }
     logger.warn(
-      { pid: record.pid, processGroupId: record.processGroupId, err },
+      { pid: record.pid, processGroupId: record.processGroupId, code, err },
       "terminate.sigkill_failed",
     );
+    throw new TerminationError(`failed to SIGKILL pid ${record.pid}: ${code ?? "unknown"}`, {
+      code,
+      cause: err,
+    });
   }
 }
 

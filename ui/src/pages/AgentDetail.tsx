@@ -2959,6 +2959,7 @@ function RunsTab({
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pushToast } = useToastActions();
   const { data: hydratedRun } = useQuery({
     queryKey: queryKeys.runDetail(initialRun.id),
     queryFn: () => heartbeatsApi.get(initialRun.id),
@@ -2975,8 +2976,15 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
   const cancelRun = useMutation({
     mutationFn: () => heartbeatsApi.cancel(run.id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      if (result?.status === "failed_cancel") {
+        pushToast({
+          title: "Cancel failed",
+          body: result.error ?? "The run could not be terminated. See server logs.",
+          tone: "error",
+        });
+      }
     },
     onSettled: () => {
       void queryClient.refetchQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
