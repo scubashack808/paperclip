@@ -1262,6 +1262,28 @@ export function IssueDetail() {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
 
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
+      }
+      pushToast({ title: "Issue deleted", tone: "success" });
+      navigate(-1);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unable to delete issue",
+        tone: "error",
+      });
+    },
+  });
+  const handleDeleteIssue = useCallback(() => {
+    deleteIssue.mutate();
+  }, [deleteIssue.mutate]);
+
   const updateChildIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => {
@@ -1281,6 +1303,27 @@ export function IssueDetail() {
   const handleChildIssueUpdate = useCallback((id: string, data: Record<string, unknown>) => {
     updateChildIssue.mutate({ id, data });
   }, [updateChildIssue]);
+
+  const deleteChildIssue = useMutation({
+    mutationFn: (id: string) => issuesApi.remove(id),
+    onSuccess: () => {
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: ["issues", resolvedCompanyId] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
+      }
+      pushToast({ title: "Sub-issue deleted", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unable to delete sub-issue",
+        tone: "error",
+      });
+    },
+  });
+  const handleChildIssueDelete = useCallback((id: string) => {
+    deleteChildIssue.mutate(id);
+  }, [deleteChildIssue]);
 
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
@@ -1828,11 +1871,13 @@ export function IssueDetail() {
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
+        onDelete={handleDeleteIssue}
       />
     );
     return () => closePanel();
   }, [
     closePanel,
+    handleDeleteIssue,
     handleIssuePropertiesUpdate,
     issuePanelKey,
     openNewSubIssue,
@@ -2206,6 +2251,7 @@ export function IssueDetail() {
           <StatusIcon
             status={issue.status}
             onChange={(status) => updateIssue.mutate({ status })}
+            onDelete={handleDeleteIssue}
           />
           <PriorityIcon
             priority={issue.priority}
@@ -2420,6 +2466,7 @@ export function IssueDetail() {
             baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
             createIssueLabel="Sub-issue"
             onUpdateIssue={handleChildIssueUpdate}
+            onDeleteIssue={handleChildIssueDelete}
           />
         </div>
       ) : (
@@ -2701,6 +2748,7 @@ export function IssueDetail() {
                 childIssues={childIssues}
                 onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
+                onDelete={handleDeleteIssue}
                 inline
               />
             </div>

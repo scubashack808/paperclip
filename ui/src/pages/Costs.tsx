@@ -28,7 +28,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { billingTypeDisplayName, cn, formatCents, formatCostOrEstimated, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -581,8 +581,8 @@ export function Costs() {
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label="Inference spend"
-              value={formatCents(spendData?.summary.spendCents ?? 0)}
+              label={spendData?.summary.spendCents === 0 && (spendData?.summary.estimatedCostCents ?? 0) > 0 ? "Est. API cost" : "Inference spend"}
+              value={formatCostOrEstimated(spendData?.summary.spendCents ?? 0, spendData?.summary.estimatedCostCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
             />
@@ -597,7 +597,7 @@ export function Costs() {
                 activeBudgetIncidents.length > 0
                   ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
                   : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                    ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)}`
+                    ? `${formatCostOrEstimated(spendData.summary.spendCents, spendData.summary.estimatedCostCents)} of ${formatCents(spendData.summary.budgetCents)}`
                     : "No monthly cap configured"
               }
               icon={Coins}
@@ -666,8 +666,11 @@ export function Costs() {
                     <div className="flex flex-wrap items-end justify-between gap-3">
                       <div>
                         <div className="text-3xl font-semibold tabular-nums">
-                          {formatCents(spendData?.summary.spendCents ?? 0)}
+                          {formatCostOrEstimated(spendData?.summary.spendCents ?? 0, spendData?.summary.estimatedCostCents ?? 0)}
                         </div>
+                        {spendData?.summary.spendCents === 0 && (spendData?.summary.estimatedCostCents ?? 0) > 0 ? (
+                          <div className="mt-0.5 text-xs text-muted-foreground">est. API cost · max plan</div>
+                        ) : null}
                         <div className="mt-1 text-sm text-muted-foreground">
                           {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                             ? `Budget ${formatCents(spendData.summary.budgetCents)}`
@@ -699,6 +702,28 @@ export function Costs() {
                         <div className="text-xs text-muted-foreground">
                           {spendData.summary.utilizationPercent}% of monthly budget consumed in this range.
                         </div>
+                      </div>
+                    ) : null}
+                    {(spendData?.summary.unknownModelIds?.length ?? 0) > 0 ? (
+                      <div className="border border-yellow-500/40 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
+                        Pricing unknown for{" "}
+                        <span className="font-mono">
+                          {(spendData?.summary.unknownModelIds ?? []).join(", ")}
+                        </span>
+                        . Tokens counted; estimate excludes these models until pricing is added.
+                      </div>
+                    ) : null}
+                    {spendData?.summary.pricingSourceFetchedAt ? (
+                      <div className="text-[11px] text-muted-foreground">
+                        Rates as of {spendData.summary.pricingSourceFetchedAt} —{" "}
+                        <a
+                          href={spendData.summary.pricingSourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                        >
+                          source
+                        </a>
                       </div>
                     ) : null}
                   </CardContent>
@@ -745,7 +770,7 @@ export function Costs() {
                                 {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                               </div>
                               <div className="text-right text-sm tabular-nums">
-                                <div className="font-medium">{formatCents(row.costCents)}</div>
+                                <div className="font-medium">{formatCostOrEstimated(row.costCents, row.estimatedCostCents)}</div>
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -764,7 +789,9 @@ export function Costs() {
                             {isExpanded && modelRows.length > 0 ? (
                               <div className="mt-3 space-y-2 border-l border-border pl-4">
                                 {modelRows.map((modelRow) => {
-                                  const sharePct = row.costCents > 0 ? Math.round((modelRow.costCents / row.costCents) * 100) : 0;
+                                  const effectiveCost = row.costCents > 0 ? row.costCents : row.estimatedCostCents;
+                                  const effectiveModelCost = modelRow.costCents > 0 ? modelRow.costCents : modelRow.estimatedCostCents;
+                                  const sharePct = effectiveCost > 0 ? Math.round((effectiveModelCost / effectiveCost) * 100) : 0;
                                   return (
                                     <div
                                       key={`${modelRow.provider}:${modelRow.model}:${modelRow.billingType}`}
@@ -782,7 +809,7 @@ export function Costs() {
                                       </div>
                                       <div className="text-right tabular-nums">
                                         <div className="font-medium">
-                                          {formatCents(modelRow.costCents)}
+                                          {formatCostOrEstimated(modelRow.costCents, modelRow.estimatedCostCents)}
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
                                         <div className="text-muted-foreground">
@@ -817,7 +844,7 @@ export function Costs() {
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                            <span className="font-medium tabular-nums">{formatCostOrEstimated(row.costCents, row.estimatedCostCents)}</span>
                           </div>
                         ))
                       )}

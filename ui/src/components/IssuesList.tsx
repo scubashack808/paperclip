@@ -195,6 +195,7 @@ interface IssuesListProps {
   enableRoutineVisibilityFilter?: boolean;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  onDeleteIssue?: (id: string) => void;
 }
 
 function IssueSearchInput({
@@ -277,6 +278,7 @@ export function IssuesList({
   enableRoutineVisibilityFilter = false,
   onSearchChange,
   onUpdateIssue,
+  onDeleteIssue,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -972,7 +974,11 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon
+                                status={issue.status}
+                                onChange={(s) => onUpdateIssue(issue.id, { status: s })}
+                                onDelete={onDeleteIssue ? () => onDeleteIssue(issue.id) : undefined}
+                              />
                             </span>
                           )
                         }
@@ -996,7 +1002,11 @@ export function IssuesList({
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                               statusSlot={(
                                 <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon
+                                    status={issue.status}
+                                    onChange={(s) => onUpdateIssue(issue.id, { status: s })}
+                                    onDelete={onDeleteIssue ? () => onDeleteIssue(issue.id) : undefined}
+                                  />
                                 </span>
                               )}
                             />
