@@ -225,7 +225,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
-  const graceSec = asNumber(config.graceSec, 20);
+  const graceSec = asNumber(config.graceSec, 5);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;

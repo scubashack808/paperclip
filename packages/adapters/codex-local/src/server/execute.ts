@@ -388,7 +388,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
-  const graceSec = asNumber(config.graceSec, 20);
+  const graceSec = asNumber(config.graceSec, 10);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
