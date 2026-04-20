@@ -1313,15 +1313,16 @@ export function IssueDetail() {
       }
       pushToast({ title: "Sub-issue deleted", tone: "success" });
     },
-    onError: (err) => {
+    onError: () => {
       pushToast({
         title: "Delete failed",
-        body: err instanceof Error ? err.message : "Unable to delete sub-issue",
+        body: "Unable to delete sub-issue. Please try again.",
         tone: "error",
       });
     },
   });
   const handleChildIssueDelete = useCallback((id: string) => {
+    if (deleteChildIssue.isPending) return;
     deleteChildIssue.mutate(id);
   }, [deleteChildIssue]);
 
