@@ -13,6 +13,7 @@ export const issueComments = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id),
     authorUserId: text("author_user_id"),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    queueTargetRunId: uuid("queue_target_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     body: text("body").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

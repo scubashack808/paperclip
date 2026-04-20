@@ -651,7 +651,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return {
           ...nextComment,
           queueState: "queued" as const,
-          queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+          queueTargetRunId: nextComment.queueTargetRunId ?? runningIssueRun?.id ?? null,
         };
       }
       return nextComment;
