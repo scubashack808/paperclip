@@ -580,7 +580,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!executionRunId || issueStatus === "in_progress",
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: 3000,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
   const resolvedActiveRun = useMemo(
@@ -964,7 +964,7 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: 3000,
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
   });
@@ -1627,6 +1627,11 @@ export function IssueDetail() {
         body: err instanceof Error ? err.message : "Unable to interrupt the active run",
         tone: "error",
       });
+    },
+    onSettled: () => {
+      void queryClient.refetchQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
+      void queryClient.refetchQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+      void queryClient.refetchQueries({ queryKey: queryKeys.issues.runs(issueId!) });
     },
   });
 
