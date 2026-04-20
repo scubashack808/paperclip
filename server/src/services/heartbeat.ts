@@ -5025,58 +5025,75 @@ export function heartbeatService(db: Db) {
       { runId: run.id, agentId: run.agentId, currentStatus: run.status, reason },
       "cancel.requested",
     );
+    if (run.status === "cancelling") {
+      logger.info({ runId: run.id, currentStatus: run.status }, "cancel.already_in_progress");
+      return run;
+    }
     if (run.status !== "running" && run.status !== "queued") {
       logger.info({ runId: run.id, currentStatus: run.status }, "cancel.skipped_status");
       return run;
     }
 
+    await setRunStatus(run.id, "cancelling", { error: reason, errorCode: "cancelling" });
+
     const running = runningProcesses.get(run.id);
     const terminateStartedAt = Date.now();
-    if (running) {
-      const graceMs = Math.max(1, running.graceSec) * 1000;
-      logger.info(
-        {
-          runId: run.id,
-          source: "in_memory",
+    let terminateError: unknown = null;
+    try {
+      if (running) {
+        const graceMs = Math.max(1, running.graceSec) * 1000;
+        logger.info(
+          {
+            runId: run.id,
+            source: "in_memory",
+            pid: running.child.pid ?? run.processPid,
+            processGroupId: running.processGroupId ?? run.processGroupId,
+            graceMs,
+          },
+          "cancel.process_found",
+        );
+        await terminateHeartbeatRunProcess({
           pid: running.child.pid ?? run.processPid,
           processGroupId: running.processGroupId ?? run.processGroupId,
           graceMs,
-        },
-        "cancel.process_found",
-      );
-      await terminateHeartbeatRunProcess({
-        pid: running.child.pid ?? run.processPid,
-        processGroupId: running.processGroupId ?? run.processGroupId,
-        graceMs,
-      });
-    } else if (run.processPid || run.processGroupId) {
-      logger.info(
-        {
-          runId: run.id,
-          source: "db_pid",
+        });
+      } else if (run.processPid || run.processGroupId) {
+        logger.info(
+          {
+            runId: run.id,
+            source: "db_pid",
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          },
+          "cancel.process_found",
+        );
+        await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
-        },
-        "cancel.process_found",
-      );
-      await terminateHeartbeatRunProcess({
-        pid: run.processPid,
-        processGroupId: run.processGroupId,
-      });
-    } else {
-      logger.info({ runId: run.id }, "cancel.no_process");
+        });
+      } else {
+        logger.info({ runId: run.id }, "cancel.no_process");
+      }
+    } catch (err) {
+      terminateError = err;
+      logger.warn({ err, runId: run.id }, "cancel.terminate_failed");
     }
     logger.info(
-      { runId: run.id, durationMs: Date.now() - terminateStartedAt },
+      { runId: run.id, durationMs: Date.now() - terminateStartedAt, hadError: !!terminateError },
       "cancel.terminate_returned",
     );
 
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const finalStatus = terminateError ? "failed_cancel" : "cancelled";
+    const finalErrorCode = terminateError ? "failed_cancel" : "cancelled";
+    const finalError = terminateError
+      ? `${reason} — terminate failed: ${terminateError instanceof Error ? terminateError.message : String(terminateError)}`
+      : reason;
+    const cancelled = await setRunStatus(run.id, finalStatus, {
       finishedAt: new Date(),
-      error: reason,
-      errorCode: "cancelled",
+      error: finalError,
+      errorCode: finalErrorCode,
     });
-    logger.info({ runId: run.id, finalStatus: "cancelled" }, "cancel.db_updated");
+    logger.info({ runId: run.id, finalStatus }, "cancel.db_updated");
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),

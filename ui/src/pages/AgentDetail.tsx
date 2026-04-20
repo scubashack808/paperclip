@@ -3117,15 +3117,15 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2">
               <StatusBadge status={run.status} />
-              {(run.status === "running" || run.status === "queued") && (
+              {(run.status === "running" || run.status === "queued" || run.status === "cancelling") && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="text-destructive hover:text-destructive text-xs h-6 px-2"
                   onClick={() => cancelRun.mutate()}
-                  disabled={cancelRun.isPending}
+                  disabled={cancelRun.isPending || run.status === "cancelling"}
                 >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {cancelRun.isPending || run.status === "cancelling" ? "Cancelling…" : "Cancel"}
                 </Button>
               )}
               {canResumeLostRun && (

@@ -336,8 +336,10 @@ export type WakeupRequestStatus = (typeof WAKEUP_REQUEST_STATUSES)[number];
 export const HEARTBEAT_RUN_STATUSES = [
   "queued",
   "running",
+  "cancelling",
   "succeeded",
   "failed",
+  "failed_cancel",
   "cancelled",
   "timed_out",
 ] as const;
