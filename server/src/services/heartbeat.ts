@@ -5021,27 +5021,62 @@ export function heartbeatService(db: Db) {
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
-    if (run.status !== "running" && run.status !== "queued") return run;
+    logger.info(
+      { runId: run.id, agentId: run.agentId, currentStatus: run.status, reason },
+      "cancel.requested",
+    );
+    if (run.status !== "running" && run.status !== "queued") {
+      logger.info({ runId: run.id, currentStatus: run.status }, "cancel.skipped_status");
+      return run;
+    }
 
     const running = runningProcesses.get(run.id);
+    const terminateStartedAt = Date.now();
     if (running) {
+      const graceMs = Math.max(1, running.graceSec) * 1000;
+      logger.info(
+        {
+          runId: run.id,
+          source: "in_memory",
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs,
+        },
+        "cancel.process_found",
+      );
       await terminateHeartbeatRunProcess({
         pid: running.child.pid ?? run.processPid,
         processGroupId: running.processGroupId ?? run.processGroupId,
-        graceMs: Math.max(1, running.graceSec) * 1000,
+        graceMs,
       });
     } else if (run.processPid || run.processGroupId) {
+      logger.info(
+        {
+          runId: run.id,
+          source: "db_pid",
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        },
+        "cancel.process_found",
+      );
       await terminateHeartbeatRunProcess({
         pid: run.processPid,
         processGroupId: run.processGroupId,
       });
+    } else {
+      logger.info({ runId: run.id }, "cancel.no_process");
     }
+    logger.info(
+      { runId: run.id, durationMs: Date.now() - terminateStartedAt },
+      "cancel.terminate_returned",
+    );
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: new Date(),
       error: reason,
       errorCode: "cancelled",
     });
+    logger.info({ runId: run.id, finalStatus: "cancelled" }, "cancel.db_updated");
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),

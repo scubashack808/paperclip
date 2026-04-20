@@ -5,6 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -295,13 +296,22 @@ export async function terminateLocalService(
 ) {
   const signal = opts?.signal ?? "SIGTERM";
   const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
+  const startedAt = Date.now();
+  logger.info(
+    { pid: record.pid, processGroupId: record.processGroupId, signal, targetProcessGroup },
+    "terminate.signal_sent",
+  );
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, signal);
     } else {
       process.kill(record.pid, signal);
     }
-  } catch {
+  } catch (err) {
+    logger.info(
+      { pid: record.pid, processGroupId: record.processGroupId, signal, err },
+      "terminate.early_exit",
+    );
     return;
   }
 
@@ -311,6 +321,10 @@ export async function terminateLocalService(
       ? isProcessGroupAlive(record.processGroupId)
       : isPidAlive(record.pid);
     if (!targetAlive) {
+      logger.info(
+        { pid: record.pid, processGroupId: record.processGroupId, waitedMs: Date.now() - startedAt },
+        "terminate.confirmed_dead",
+      );
       return;
     }
     await delay(100);
@@ -319,15 +333,28 @@ export async function terminateLocalService(
   const stillAlive = targetProcessGroup
     ? isProcessGroupAlive(record.processGroupId)
     : isPidAlive(record.pid);
-  if (!stillAlive) return;
+  if (!stillAlive) {
+    logger.info(
+      { pid: record.pid, processGroupId: record.processGroupId, waitedMs: Date.now() - startedAt },
+      "terminate.confirmed_dead",
+    );
+    return;
+  }
+  logger.warn(
+    { pid: record.pid, processGroupId: record.processGroupId, waitedMs: Date.now() - startedAt },
+    "terminate.sigkill_escalation",
+  );
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, "SIGKILL");
     } else {
       process.kill(record.pid, "SIGKILL");
     }
-  } catch {
-    // Ignore cleanup races.
+  } catch (err) {
+    logger.warn(
+      { pid: record.pid, processGroupId: record.processGroupId, err },
+      "terminate.sigkill_failed",
+    );
   }
 }
 
