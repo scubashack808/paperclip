@@ -32,7 +32,6 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
-  companyService,
   executionWorkspaceService,
   feedbackService,
   goalService,
@@ -46,6 +45,8 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { companies, companyLogos } from "@paperclipai/db";
+import { eq, inArray } from "drizzle-orm";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -304,7 +305,6 @@ export function issueRoutes(
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
-  const companiesSvc = companyService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
@@ -413,7 +413,7 @@ export function issueRoutes(
     if (!allowList.includes(targetCompanyId)) {
       throw forbidden("Agent key cannot access another company");
     }
-    return { isForeignPost: true, originCompanyId: req.actor.companyId };
+    return { isForeignPost: true, originCompanyId: req.actor.companyId ?? null };
   }
 
   // Returns true if the actor is an origin-company agent of a cross-posted issue
@@ -455,20 +455,42 @@ export function issueRoutes(
     logoUrl: string | null;
   };
 
+  async function resolveCompanySummariesByIds(
+    ids: string[],
+  ): Promise<Map<string, OriginCompanySummary>> {
+    const out = new Map<string, OriginCompanySummary>();
+    if (ids.length === 0) return out;
+    try {
+      const rows = await db
+        .select({
+          id: companies.id,
+          name: companies.name,
+          logoAssetId: companyLogos.assetId,
+        })
+        .from(companies)
+        .leftJoin(companyLogos, eq(companyLogos.companyId, companies.id))
+        .where(inArray(companies.id, ids));
+      for (const row of rows) {
+        out.set(row.id, {
+          id: row.id,
+          name: row.name,
+          logoUrl: row.logoAssetId ? `/api/assets/${row.logoAssetId}/content` : null,
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, ids }, "failed to resolve company summaries");
+    }
+    return out;
+  }
+
   async function resolveOriginCompanySummary(issue: {
     originKind?: string | null;
     originId?: string | null;
   }): Promise<OriginCompanySummary | null> {
     if (issue.originKind !== "cross_company") return null;
     if (!issue.originId) return null;
-    try {
-      const company = await companiesSvc.getById(issue.originId);
-      if (!company) return null;
-      return { id: company.id, name: company.name, logoUrl: company.logoUrl ?? null };
-    } catch (err) {
-      logger.warn({ err, originId: issue.originId }, "failed to resolve origin company for issue");
-      return null;
-    }
+    const map = await resolveCompanySummariesByIds([issue.originId]);
+    return map.get(issue.originId) ?? null;
   }
 
   async function enrichIssueWithOriginCompany<T extends { originKind?: string | null; originId?: string | null }>(
@@ -486,17 +508,7 @@ export function issueRoutes(
       if (it.originKind === "cross_company" && it.originId) uniqueIds.add(it.originId);
     }
     if (uniqueIds.size === 0) return items.map((it) => ({ ...it, originCompany: null }));
-    const byId = new Map<string, OriginCompanySummary>();
-    await Promise.all(
-      Array.from(uniqueIds).map(async (id) => {
-        try {
-          const company = await companiesSvc.getById(id);
-          if (company) byId.set(id, { id: company.id, name: company.name, logoUrl: company.logoUrl ?? null });
-        } catch (err) {
-          logger.warn({ err, originId: id }, "failed to resolve origin company for list enrichment");
-        }
-      }),
-    );
+    const byId = await resolveCompanySummariesByIds(Array.from(uniqueIds));
     return items.map((it) => ({
       ...it,
       originCompany:
@@ -789,23 +801,7 @@ export function issueRoutes(
     // The target company on each row varies per-issue; resolve each distinct companyId
     // so the UI can show "posted to <target>" without a follow-up request per issue.
     const targetCompanyIds = Array.from(new Set(rows.map((r) => r.companyId)));
-    const targetCompanyById = new Map<string, { id: string; name: string; logoUrl: string | null }>();
-    await Promise.all(
-      targetCompanyIds.map(async (id) => {
-        try {
-          const company = await companiesSvc.getById(id);
-          if (company) {
-            targetCompanyById.set(id, {
-              id: company.id,
-              name: company.name,
-              logoUrl: company.logoUrl ?? null,
-            });
-          }
-        } catch (err) {
-          logger.warn({ err, companyId: id }, "failed to resolve target company for cross-posted list");
-        }
-      }),
-    );
+    const targetCompanyById = await resolveCompanySummariesByIds(targetCompanyIds);
     res.json(
       rows.map((row) => ({
         ...row,

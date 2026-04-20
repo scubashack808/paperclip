@@ -11,7 +11,7 @@ import type {
 
 export interface AgentPermissions {
   canCreateAgents: boolean;
-  allowedForeignCompanies: string[];
+  allowedForeignCompanies?: string[];
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";

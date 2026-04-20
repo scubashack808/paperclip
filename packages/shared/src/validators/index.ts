@@ -104,6 +104,7 @@ export {
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  updateAllowedForeignCompaniesSchema,
   type CreateAgent,
   type CreateAgentHire,
   type UpdateAgent,
@@ -116,6 +117,7 @@ export {
   type ResetAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
+  type UpdateAllowedForeignCompanies,
 } from "./agent.js";
 
 export {

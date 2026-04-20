@@ -34,9 +34,8 @@ export function CrossPostedIssues() {
   if (error) {
     return (
       <EmptyState
-        icon={<Send className="h-6 w-6" />}
-        title="Could not load cross-posted issues"
-        description={error instanceof Error ? error.message : "Unknown error"}
+        icon={Send}
+        message={`Could not load cross-posted issues: ${error instanceof Error ? error.message : "Unknown error"}`}
       />
     );
   }
@@ -45,9 +44,8 @@ export function CrossPostedIssues() {
   if (issues.length === 0) {
     return (
       <EmptyState
-        icon={<Send className="h-6 w-6" />}
-        title="No cross-posted issues yet"
-        description="Issues this company has posted into other companies' queues will appear here with live status."
+        icon={Send}
+        message="No cross-posted issues yet. Issues this company has posted into other companies will appear here."
       />
     );
   }
