@@ -394,6 +394,26 @@ export function issueRoutes(
     throw unauthorized();
   }
 
+  async function assertCanCreateIssueInCompany(
+    req: Request,
+    targetCompanyId: string,
+  ): Promise<{ isForeignPost: boolean; originCompanyId: string | null }> {
+    const isCrossCompanyAgent =
+      req.actor.type === "agent" && req.actor.companyId !== targetCompanyId;
+    if (!isCrossCompanyAgent) {
+      assertCompanyAccess(req, targetCompanyId);
+      return { isForeignPost: false, originCompanyId: null };
+    }
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    const allowed = actorAgent?.permissions?.allowedForeignCompanies;
+    const allowList = Array.isArray(allowed) ? allowed : [];
+    if (!allowList.includes(targetCompanyId)) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    return { isForeignPost: true, originCompanyId: req.actor.companyId };
+  }
+
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -1328,8 +1348,11 @@ export function issueRoutes(
 
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const crossCompanyContext = await assertCanCreateIssueInCompany(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (crossCompanyContext.isForeignPost && (req.body.assigneeAgentId || req.body.assigneeUserId)) {
+      throw forbidden("Cross-company issue posts cannot set an assignee — the target company's routing picks up the issue");
+    }
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
@@ -1341,6 +1364,9 @@ export function issueRoutes(
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      ...(crossCompanyContext.isForeignPost && crossCompanyContext.originCompanyId
+        ? { originKind: "cross_company", originId: crossCompanyContext.originCompanyId }
+        : {}),
     });
 
     await logActivity(db, {
