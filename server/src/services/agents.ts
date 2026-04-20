@@ -520,7 +520,10 @@ export function agentService(db: Db) {
       return updated ? normalizeAgentRow(updated) : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (
+      id: string,
+      permissions: { canCreateAgents: boolean; allowedForeignCompanies?: string[] },
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
 

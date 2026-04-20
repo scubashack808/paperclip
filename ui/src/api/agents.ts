@@ -119,6 +119,15 @@ export const agentsApi = {
     api.patch<Agent>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
     api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
+  updateAllowedForeignCompanies: (
+    id: string,
+    allowedForeignCompanies: string[],
+    companyId?: string,
+  ) =>
+    api.patch<AgentDetail>(
+      agentPath(id, companyId, "/allowed-foreign-companies"),
+      { allowedForeignCompanies },
+    ),
   instructionsBundle: (id: string, companyId?: string) =>
     api.get<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle")),
   updateInstructionsBundle: (

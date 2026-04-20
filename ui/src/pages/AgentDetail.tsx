@@ -8,6 +8,7 @@ import {
   type AgentPermissionUpdate,
 } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
+import { companiesApi } from "../api/companies";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -1593,6 +1594,42 @@ function ConfigurationTab({
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const allowedForeignCompanies = useMemo(
+    () => agent.permissions?.allowedForeignCompanies ?? [],
+    [agent.permissions?.allowedForeignCompanies],
+  );
+  const { data: allCompanies } = useQuery({
+    queryKey: queryKeys.companies.all,
+    queryFn: () => companiesApi.list(),
+  });
+  const [selectedForeignCompanyId, setSelectedForeignCompanyId] = useState<string>("");
+  const updateAllowedForeignCompanies = useMutation({
+    mutationFn: (next: string[]) =>
+      agentsApi.updateAllowedForeignCompanies(agent.id, next, companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      setSelectedForeignCompanyId("");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Grant failed",
+        body: err instanceof Error ? err.message : "Could not update cross-company permission",
+        tone: "error",
+      });
+    },
+  });
+  const grantableCompanies = useMemo(() => {
+    if (!allCompanies) return [];
+    return allCompanies.filter(
+      (c) => c.id !== agent.companyId && !allowedForeignCompanies.includes(c.id),
+    );
+  }, [allCompanies, agent.companyId, allowedForeignCompanies]);
+  const companyNameLookup = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of allCompanies ?? []) map.set(c.id, c.name);
+    return map;
+  }, [allCompanies]);
   const taskAssignHint =
     taskAssignSource === "ceo_role"
       ? "Enabled automatically for CEO agents."
@@ -1657,6 +1694,81 @@ function ConfigurationTab({
               }
               disabled={updatePermissions.isPending || taskAssignLocked}
             />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium mb-3">Cross-company posting</h3>
+        <div className="border border-border rounded-lg p-4 space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Companies this agent may post issues into. Issues will appear in the target company's queue
+            tagged as cross-posted. Revoking a grant immediately blocks reads, comments, and new posts
+            on existing cross-posted issues.
+          </p>
+          {allowedForeignCompanies.length === 0 ? (
+            <p className="text-xs italic text-muted-foreground">No cross-company grants yet.</p>
+          ) : (
+            <ul className="space-y-1" data-testid="allowed-foreign-companies-list">
+              {allowedForeignCompanies.map((fid) => (
+                <li
+                  key={fid}
+                  className="flex items-center justify-between gap-3 rounded border border-border bg-muted/30 px-2 py-1 text-sm"
+                >
+                  <span className="truncate">
+                    {companyNameLookup.get(fid) ?? fid}
+                    <span className="ml-2 font-mono text-[10px] text-muted-foreground">{fid.slice(0, 8)}</span>
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      updateAllowedForeignCompanies.mutate(
+                        allowedForeignCompanies.filter((x) => x !== fid),
+                      )
+                    }
+                    disabled={updateAllowedForeignCompanies.isPending}
+                    data-testid={`revoke-foreign-company-${fid}`}
+                  >
+                    Revoke
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex items-center gap-2 pt-1">
+            <select
+              value={selectedForeignCompanyId}
+              onChange={(e) => setSelectedForeignCompanyId(e.target.value)}
+              className="flex h-8 flex-1 rounded-md border border-border bg-background px-2 text-sm"
+              data-testid="grant-foreign-company-select"
+            >
+              <option value="">Select a company…</option>
+              {grantableCompanies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() =>
+                updateAllowedForeignCompanies.mutate([
+                  ...allowedForeignCompanies,
+                  selectedForeignCompanyId,
+                ])
+              }
+              disabled={
+                !selectedForeignCompanyId ||
+                updateAllowedForeignCompanies.isPending ||
+                grantableCompanies.length === 0
+              }
+              data-testid="grant-foreign-company-submit"
+            >
+              Grant
+            </Button>
           </div>
         </div>
       </div>

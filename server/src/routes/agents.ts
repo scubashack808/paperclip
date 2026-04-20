@@ -19,6 +19,7 @@ import {
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
+  updateAllowedForeignCompaniesSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
@@ -1680,6 +1681,67 @@ export function agentRoutes(db: Db) {
 
     res.json(await buildAgentDetail(agent));
   });
+
+  router.patch(
+    "/agents/:id/allowed-foreign-companies",
+    validate(updateAllowedForeignCompaniesSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+
+      if (req.actor.type === "agent") {
+        const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+        if (!actorAgent || actorAgent.companyId !== existing.companyId) {
+          res.status(403).json({ error: "Forbidden" });
+          return;
+        }
+        if (actorAgent.role !== "ceo") {
+          res.status(403).json({ error: "Only CEO can grant or revoke cross-company posting" });
+          return;
+        }
+      } else {
+        await assertBoardCanManageAgentsForCompany(req, existing.companyId);
+      }
+
+      const requested = req.body.allowedForeignCompanies as string[];
+      // An agent cannot be granted permission to cross-post to its own company.
+      if (requested.includes(existing.companyId)) {
+        res.status(422).json({ error: "Cannot grant cross-posting to the agent's own company" });
+        return;
+      }
+
+      const agent = await svc.updatePermissions(id, {
+        canCreateAgents: Boolean(existing.permissions?.canCreateAgents),
+        allowedForeignCompanies: Array.from(new Set(requested)),
+      });
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.allowed_foreign_companies_updated",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          allowedForeignCompanies: agent.permissions?.allowedForeignCompanies ?? [],
+        },
+      });
+
+      res.json(await buildAgentDetail(agent));
+    },
+  );
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
     const id = req.params.id as string;

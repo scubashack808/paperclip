@@ -131,6 +131,13 @@ export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema
 export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canAssignTasks: z.boolean(),
+  allowedForeignCompanies: z.array(z.string().uuid()).optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const updateAllowedForeignCompaniesSchema = z.object({
+  allowedForeignCompanies: z.array(z.string().uuid()),
+});
+
+export type UpdateAllowedForeignCompanies = z.infer<typeof updateAllowedForeignCompaniesSchema>;
