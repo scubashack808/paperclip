@@ -6,6 +6,7 @@ import {
   DollarSign,
   History,
   Search,
+  Send,
   SquarePen,
   Network,
   Boxes,
@@ -92,6 +93,7 @@ export function Sidebar() {
 
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
+          <SidebarNavItem to="/inbox/cross-posted" label="Cross-posted" icon={Send} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>

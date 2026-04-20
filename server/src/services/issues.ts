@@ -1315,6 +1315,24 @@ export function issueService(db: Db) {
       return getIssueByIdentifier(identifier);
     },
 
+    listCrossPostedByOriginCompany: async (originCompanyId: string, limit?: number) => {
+      const conditions = [
+        eq(issues.originKind, "cross_company"),
+        eq(issues.originId, originCompanyId),
+        isNull(issues.hiddenAt),
+      ];
+      const effectiveLimit = typeof limit === "number" && Number.isFinite(limit)
+        ? Math.max(1, Math.floor(limit))
+        : undefined;
+      const baseQuery = db
+        .select(issueListSelect)
+        .from(issues)
+        .where(and(...conditions))
+        .orderBy(desc(issues.updatedAt));
+      const rows = effectiveLimit === undefined ? await baseQuery : await baseQuery.limit(effectiveLimit);
+      return withIssueLabels(db, rows);
+    },
+
     getRelationSummaries: async (issueId: string) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })

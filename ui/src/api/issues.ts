@@ -60,6 +60,12 @@ export const issuesApi = {
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
+  listCrossPosted: (companyId: string, limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : "";
+    return api.get<Array<Issue & { targetCompany: { id: string; name: string; logoUrl: string | null } | null }>>(
+      `/companies/${companyId}/cross-posted-issues${qs}`,
+    );
+  },
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),

@@ -775,6 +775,45 @@ export function issueRoutes(
     res.json(enriched);
   });
 
+  // Origin-side inbox: issues this company has cross-posted INTO other companies.
+  router.get("/companies/:companyId/cross-posted-issues", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rawLimit = req.query.limit as string | undefined;
+    const parsedLimit = rawLimit ? Number.parseInt(rawLimit, 10) : null;
+    if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+    const rows = await svc.listCrossPostedByOriginCompany(companyId, parsedLimit ?? undefined);
+    // The target company on each row varies per-issue; resolve each distinct companyId
+    // so the UI can show "posted to <target>" without a follow-up request per issue.
+    const targetCompanyIds = Array.from(new Set(rows.map((r) => r.companyId)));
+    const targetCompanyById = new Map<string, { id: string; name: string; logoUrl: string | null }>();
+    await Promise.all(
+      targetCompanyIds.map(async (id) => {
+        try {
+          const company = await companiesSvc.getById(id);
+          if (company) {
+            targetCompanyById.set(id, {
+              id: company.id,
+              name: company.name,
+              logoUrl: company.logoUrl ?? null,
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, companyId: id }, "failed to resolve target company for cross-posted list");
+        }
+      }),
+    );
+    res.json(
+      rows.map((row) => ({
+        ...row,
+        targetCompany: targetCompanyById.get(row.companyId) ?? null,
+      })),
+    );
+  });
+
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
