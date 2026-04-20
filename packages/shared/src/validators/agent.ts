@@ -10,6 +10,7 @@ import { envConfigSchema } from "./secret.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
+  allowedForeignCompanies: z.array(z.string().uuid()).optional().default([]),
 });
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
