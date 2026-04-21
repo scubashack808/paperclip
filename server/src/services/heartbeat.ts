@@ -93,7 +93,7 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
-const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
+const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "cancelling"] as const;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -2599,10 +2599,13 @@ export function heartbeatService(db: Db) {
   }
 
   async function countRunningRunsForAgent(agentId: string) {
+    // "cancelling" counts as a live slot — the process may still be alive, and
+    // promoting a new run for this agent before cancel completes would
+    // double-occupy the slot. See GLA-11 review.
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
+      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["running", "cancelling"])));
     return Number(count ?? 0);
   }
 
@@ -3953,7 +3956,16 @@ export function heartbeatService(db: Db) {
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
-      if (latestRun?.status === "cancelled") {
+      // When cancelRunInternal has already claimed ownership of this run's
+      // terminal state (cancelling / cancelled / failed_cancel), executeRun
+      // must not overwrite it. Doing so would clobber the cancel state
+      // machine — in the failed_cancel case we would silently flip the run
+      // back to "cancelled" while the child process may still be alive.
+      const cancelClaimed =
+        latestRun?.status === "cancelled" ||
+        latestRun?.status === "cancelling" ||
+        latestRun?.status === "failed_cancel";
+      if (cancelClaimed) {
         outcome = "cancelled";
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
@@ -4008,42 +4020,49 @@ export function heartbeatService(db: Db) {
         adapterResult.summary ?? null,
       );
 
-      await setRunStatus(run.id, status, {
-        finishedAt: new Date(),
-        error:
-          outcome === "succeeded"
-            ? null
-            : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                currentUserRedactionOptions,
-              ),
-        errorCode:
-          outcome === "timed_out"
-            ? "timeout"
-            : outcome === "cancelled"
-              ? "cancelled"
-              : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
-                : null,
-        exitCode: adapterResult.exitCode,
-        signal: adapterResult.signal,
-        usageJson,
-        resultJson: persistedResultJson,
-        sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
-        logBytes: logSummary?.bytes,
-        logSha256: logSummary?.sha256,
-        logCompressed: logSummary?.compressed ?? false,
-      });
+      if (!cancelClaimed) {
+        await setRunStatus(run.id, status, {
+          finishedAt: new Date(),
+          error:
+            outcome === "succeeded"
+              ? null
+              : redactCurrentUserText(
+                  adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                  currentUserRedactionOptions,
+                ),
+          errorCode:
+            outcome === "timed_out"
+              ? "timeout"
+              : outcome === "cancelled"
+                ? "cancelled"
+                : outcome === "failed"
+                  ? (adapterResult.errorCode ?? "adapter_failed")
+                  : null,
+          exitCode: adapterResult.exitCode,
+          signal: adapterResult.signal,
+          usageJson,
+          resultJson: persistedResultJson,
+          sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+          stdoutExcerpt,
+          stderrExcerpt,
+          logBytes: logSummary?.bytes,
+          logSha256: logSummary?.sha256,
+          logCompressed: logSummary?.compressed ?? false,
+        });
 
-      await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
-        finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
-      });
+        await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
+          finishedAt: new Date(),
+          error: adapterResult.errorMessage ?? null,
+        });
+      } else {
+        logger.info(
+          { runId: run.id, cancelStatus: latestRun?.status, adapterOutcome: outcome },
+          "run.finalize.yielded_to_cancel",
+        );
+      }
 
       const finalizedRun = await getRun(run.id);
-      if (finalizedRun) {
+      if (finalizedRun && !cancelClaimed) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
           stream: "system",
@@ -4098,7 +4117,9 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      if (!cancelClaimed) {
+        await finalizeAgentStatus(agent.id, outcome);
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -4201,7 +4222,17 @@ export function heartbeatService(db: Db) {
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          // When a cancel ended in failed_cancel (terminate threw), P3 intentionally
+          // leaves the agent in "failed" and does not promote. Don't undo that here.
+          const finalRun = await getRun(run.id).catch(() => null);
+          if (finalRun?.status !== "failed_cancel") {
+            await startNextQueuedRunForAgent(run.agentId);
+          } else {
+            logger.info(
+              { runId: run.id, agentId: run.agentId },
+              "startNextQueuedRunForAgent.skipped_failed_cancel",
+            );
+          }
         }
   }
 
@@ -4577,7 +4608,12 @@ export function heartbeatService(db: Db) {
             .then((rows) => rows[0] ?? null)
           : null;
 
-        if (activeExecutionRun && activeExecutionRun.status !== "queued" && activeExecutionRun.status !== "running") {
+        if (
+          activeExecutionRun &&
+          activeExecutionRun.status !== "queued" &&
+          activeExecutionRun.status !== "running" &&
+          activeExecutionRun.status !== "cancelling"
+        ) {
           activeExecutionRun = null;
         }
 
@@ -4600,12 +4636,12 @@ export function heartbeatService(db: Db) {
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
-                inArray(heartbeatRuns.status, ["queued", "running"]),
+                inArray(heartbeatRuns.status, ["queued", "running", "cancelling"]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
             )
             .orderBy(
-              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+              sql`case when ${heartbeatRuns.status} = 'running' then 0 when ${heartbeatRuns.status} = 'cancelling' then 1 else 2 end`,
               asc(heartbeatRuns.createdAt),
             )
             .limit(1)
@@ -4641,12 +4677,16 @@ export function heartbeatService(db: Db) {
             normalizeAgentNameKey(executionAgent?.name);
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
+          const activeRunIsCancelling = activeExecutionRun.status === "cancelling";
           const shouldQueueFollowupForCommentWake =
             Boolean(wakeCommentId) &&
-            activeExecutionRun.status === "running" &&
+            (activeExecutionRun.status === "running" || activeRunIsCancelling) &&
             isSameExecutionAgent;
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          // Never merge new context into a cancelling run — it's about to die
+          // and the merged context would be silently dropped. Defer instead so
+          // the next run (promoted after cancel completes) picks it up.
+          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake && !activeRunIsCancelling) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -4813,7 +4853,12 @@ export function heartbeatService(db: Db) {
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])))
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, ["queued", "running", "cancelling"]),
+        ),
+      )
       .orderBy(desc(heartbeatRuns.createdAt));
 
     const sameScopeQueuedRun = activeRuns.find(
@@ -5021,27 +5066,79 @@ export function heartbeatService(db: Db) {
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
-    if (run.status !== "running" && run.status !== "queued") return run;
-
-    const running = runningProcesses.get(run.id);
-    if (running) {
-      await terminateHeartbeatRunProcess({
-        pid: running.child.pid ?? run.processPid,
-        processGroupId: running.processGroupId ?? run.processGroupId,
-        graceMs: Math.max(1, running.graceSec) * 1000,
-      });
-    } else if (run.processPid || run.processGroupId) {
-      await terminateHeartbeatRunProcess({
-        pid: run.processPid,
-        processGroupId: run.processGroupId,
-      });
+    logger.info(
+      { runId: run.id, agentId: run.agentId, currentStatus: run.status, reason },
+      "cancel.requested",
+    );
+    if (run.status === "cancelling") {
+      logger.info({ runId: run.id, currentStatus: run.status }, "cancel.already_in_progress");
+      return run;
+    }
+    if (run.status !== "running" && run.status !== "queued") {
+      logger.info({ runId: run.id, currentStatus: run.status }, "cancel.skipped_status");
+      return run;
     }
 
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    await setRunStatus(run.id, "cancelling", { error: reason, errorCode: "cancelling" });
+
+    const running = runningProcesses.get(run.id);
+    const terminateStartedAt = Date.now();
+    let terminateError: unknown = null;
+    try {
+      if (running) {
+        const graceMs = Math.max(1, running.graceSec) * 1000;
+        logger.info(
+          {
+            runId: run.id,
+            source: "in_memory",
+            pid: running.child.pid ?? run.processPid,
+            processGroupId: running.processGroupId ?? run.processGroupId,
+            graceMs,
+          },
+          "cancel.process_found",
+        );
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs,
+        });
+      } else if (run.processPid || run.processGroupId) {
+        logger.info(
+          {
+            runId: run.id,
+            source: "db_pid",
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          },
+          "cancel.process_found",
+        );
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      } else {
+        logger.info({ runId: run.id }, "cancel.no_process");
+      }
+    } catch (err) {
+      terminateError = err;
+      logger.warn({ err, runId: run.id }, "cancel.terminate_failed");
+    }
+    logger.info(
+      { runId: run.id, durationMs: Date.now() - terminateStartedAt, hadError: !!terminateError },
+      "cancel.terminate_returned",
+    );
+
+    const finalStatus = terminateError ? "failed_cancel" : "cancelled";
+    const finalErrorCode = terminateError ? "failed_cancel" : "cancelled";
+    const finalError = terminateError
+      ? `${reason} — terminate failed: ${terminateError instanceof Error ? terminateError.message : String(terminateError)}`
+      : reason;
+    const cancelled = await setRunStatus(run.id, finalStatus, {
       finishedAt: new Date(),
-      error: reason,
-      errorCode: "cancelled",
+      error: finalError,
+      errorCode: finalErrorCode,
     });
+    logger.info({ runId: run.id, finalStatus }, "cancel.db_updated");
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),
@@ -5052,15 +5149,21 @@ export function heartbeatService(db: Db) {
       await appendRunEvent(cancelled, 1, {
         eventType: "lifecycle",
         stream: "system",
-        level: "warn",
-        message: "run cancelled",
+        level: terminateError ? "error" : "warn",
+        message: terminateError ? "run cancel failed -- process may still be alive" : "run cancelled",
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      if (!terminateError) {
+        await releaseIssueExecutionAndPromote(cancelled);
+      }
     }
 
-    runningProcesses.delete(run.id);
-    await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!terminateError) {
+      runningProcesses.delete(run.id);
+      await finalizeAgentStatus(run.agentId, "cancelled");
+      await startNextQueuedRunForAgent(run.agentId);
+    } else {
+      await finalizeAgentStatus(run.agentId, "failed");
+    }
     return cancelled;
   }
 

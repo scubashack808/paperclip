@@ -1729,10 +1729,12 @@ export function issueRoutes(
 
     let comment = null;
     if (commentBody) {
+      const queueTargetRun = interruptedRunId ? null : await resolveActiveIssueRun(existing);
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
+        queueTargetRunId: queueTargetRun?.id ?? null,
       });
 
       await logActivity(db, {
@@ -2399,10 +2401,12 @@ export function issueRoutes(
       }
     }
 
+    const queueTargetRun = interruptedRunId ? null : await resolveActiveIssueRun(currentIssue);
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       runId: actor.runId,
+      queueTargetRunId: queueTargetRun?.id ?? null,
     });
 
     if (actor.runId) {

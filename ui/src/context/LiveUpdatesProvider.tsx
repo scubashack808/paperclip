@@ -775,6 +775,13 @@ function handleLiveEvent(
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
+      if (import.meta.env.DEV && typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("paperclip:dev:run-status", {
+            detail: { ...payload, observedAt: Date.now() },
+          }),
+        );
+      }
       const toast = buildRunStatusToast(payload, nameOf);
       if (
         toast &&

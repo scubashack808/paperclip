@@ -54,6 +54,7 @@ import {
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
 import { removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
+import { CancelBreadcrumbs } from "../components/dev/CancelBreadcrumbs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
@@ -579,7 +580,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!executionRunId || issueStatus === "in_progress",
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: 3000,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
   const resolvedActiveRun = useMemo(
@@ -650,7 +651,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return {
           ...nextComment,
           queueState: "queued" as const,
-          queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+          queueTargetRunId: nextComment.queueTargetRunId ?? runningIssueRun?.id ?? null,
         };
       }
       return nextComment;
@@ -963,7 +964,7 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: 3000,
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
   });
@@ -1626,6 +1627,11 @@ export function IssueDetail() {
         body: err instanceof Error ? err.message : "Unable to interrupt the active run",
         tone: "error",
       });
+    },
+    onSettled: () => {
+      void queryClient.refetchQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
+      void queryClient.refetchQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+      void queryClient.refetchQueries({ queryKey: queryKeys.issues.runs(issueId!) });
     },
   });
 
@@ -2756,6 +2762,7 @@ export function IssueDetail() {
         </SheetContent>
       </Sheet>
       <ScrollToBottom />
+      <CancelBreadcrumbs />
     </div>
   );
 }

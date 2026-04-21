@@ -5,6 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -289,20 +290,56 @@ export async function touchLocalServiceRegistryRecord(
   return next;
 }
 
+export class TerminationError extends Error {
+  readonly code: string | undefined;
+  constructor(message: string, opts?: { code?: string; cause?: unknown }) {
+    super(message, opts?.cause ? { cause: opts.cause } : undefined);
+    this.name = "TerminationError";
+    this.code = opts?.code;
+  }
+}
+
+function errnoCode(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err && typeof (err as { code?: unknown }).code === "string") {
+    return (err as { code: string }).code;
+  }
+  return undefined;
+}
+
 export async function terminateLocalService(
   record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">,
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
   const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
+  const startedAt = Date.now();
+  logger.info(
+    { pid: record.pid, processGroupId: record.processGroupId, signal, targetProcessGroup },
+    "terminate.signal_sent",
+  );
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, signal);
     } else {
       process.kill(record.pid, signal);
     }
-  } catch {
-    return;
+  } catch (err) {
+    const code = errnoCode(err);
+    if (code === "ESRCH") {
+      logger.info(
+        { pid: record.pid, processGroupId: record.processGroupId, signal },
+        "terminate.early_exit",
+      );
+      return;
+    }
+    logger.warn(
+      { pid: record.pid, processGroupId: record.processGroupId, signal, code, err },
+      "terminate.signal_failed",
+    );
+    throw new TerminationError(`failed to deliver ${signal} to pid ${record.pid}: ${code ?? "unknown"}`, {
+      code,
+      cause: err,
+    });
   }
 
   const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
@@ -311,6 +348,10 @@ export async function terminateLocalService(
       ? isProcessGroupAlive(record.processGroupId)
       : isPidAlive(record.pid);
     if (!targetAlive) {
+      logger.info(
+        { pid: record.pid, processGroupId: record.processGroupId, waitedMs: Date.now() - startedAt },
+        "terminate.confirmed_dead",
+      );
       return;
     }
     await delay(100);
@@ -319,15 +360,40 @@ export async function terminateLocalService(
   const stillAlive = targetProcessGroup
     ? isProcessGroupAlive(record.processGroupId)
     : isPidAlive(record.pid);
-  if (!stillAlive) return;
+  if (!stillAlive) {
+    logger.info(
+      { pid: record.pid, processGroupId: record.processGroupId, waitedMs: Date.now() - startedAt },
+      "terminate.confirmed_dead",
+    );
+    return;
+  }
+  logger.warn(
+    { pid: record.pid, processGroupId: record.processGroupId, waitedMs: Date.now() - startedAt },
+    "terminate.sigkill_escalation",
+  );
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, "SIGKILL");
     } else {
       process.kill(record.pid, "SIGKILL");
     }
-  } catch {
-    // Ignore cleanup races.
+  } catch (err) {
+    const code = errnoCode(err);
+    if (code === "ESRCH") {
+      logger.info(
+        { pid: record.pid, processGroupId: record.processGroupId },
+        "terminate.sigkill_already_gone",
+      );
+      return;
+    }
+    logger.warn(
+      { pid: record.pid, processGroupId: record.processGroupId, code, err },
+      "terminate.sigkill_failed",
+    );
+    throw new TerminationError(`failed to SIGKILL pid ${record.pid}: ${code ?? "unknown"}`, {
+      code,
+      cause: err,
+    });
   }
 }
 
