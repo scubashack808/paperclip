@@ -73,6 +73,7 @@ import {
   restoreComposerViewportSnapshot,
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
+import { useStickyBottomScroll } from "../hooks/useStickyBottomScroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
@@ -2066,9 +2067,23 @@ export function IssueChatThread({
     onCancel: onCancelRun,
   });
 
+  const hashTargetsAComment =
+    location.hash.startsWith("#comment-")
+    || location.hash.startsWith("#activity-")
+    || location.hash.startsWith("#run-");
+
+  const { isPinned, pinnedRef, scrollToBottom } = useStickyBottomScroll({
+    messages,
+    isStreaming: isRunning,
+    hasHashTarget: hashTargetsAComment,
+  });
+
   useLayoutEffect(() => {
+    // Composer-preserve only runs when the user is following the tail. If the
+    // user has scrolled up to read older content, we leave the page scroll
+    // alone — pulling them back down is the bug GLA-15 reported.
     const composerElement = composerViewportAnchorRef.current;
-    if (preserveComposerViewportRef.current) {
+    if (preserveComposerViewportRef.current && pinnedRef.current) {
       restoreComposerViewportSnapshot(
         composerViewportSnapshotRef.current,
         composerElement,
@@ -2077,21 +2092,20 @@ export function IssueChatThread({
 
     composerViewportSnapshotRef.current = captureComposerViewportSnapshot(composerElement);
     preserveComposerViewportRef.current = shouldPreserveComposerViewport(composerElement);
-  }, [messages]);
+  }, [messages, pinnedRef]);
 
   useEffect(() => {
-    const hash = location.hash;
-    if (!(hash.startsWith("#comment-") || hash.startsWith("#activity-") || hash.startsWith("#run-"))) return;
+    if (!hashTargetsAComment) return;
     if (messages.length === 0 || hasScrolledRef.current) return;
-    const targetId = hash.slice(1);
+    const targetId = location.hash.slice(1);
     const element = document.getElementById(targetId);
     if (!element) return;
     hasScrolledRef.current = true;
     element.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [location.hash, messages]);
+  }, [hashTargetsAComment, location.hash, messages]);
 
   function handleJumpToLatest() {
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollToBottom("smooth");
   }
 
   const chatCtx = useMemo<IssueChatMessageContext>(
@@ -2154,11 +2168,12 @@ export function IssueChatThread({
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
-        {resolvedShowJumpToLatest ? (
+        {resolvedShowJumpToLatest && !isPinned ? (
           <div className="flex justify-end">
             <button
               type="button"
               onClick={handleJumpToLatest}
+              data-testid="issue-chat-jump-to-latest"
               className="text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
               Jump to latest

@@ -182,7 +182,11 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Jump to latest");
+    // The jump-to-latest control is sticky-bottom now: only appears when the
+    // user has scrolled away from the latest message. With no comments and
+    // jsdom's flat scroll geometry, the user is treated as pinned to the
+    // bottom and the button is hidden.
+    expect(container.textContent).not.toContain("Jump to latest");
     expect(container.textContent).not.toContain("Chat (");
 
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;

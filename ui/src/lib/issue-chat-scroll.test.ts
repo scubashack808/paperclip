@@ -3,9 +3,31 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   captureComposerViewportSnapshot,
+  isScrollTargetNearBottom,
   restoreComposerViewportSnapshot,
+  resolveIssueChatScrollTarget,
+  scrollTargetToBottom,
   shouldPreserveComposerViewport,
 } from "./issue-chat-scroll";
+
+function makeMainContent({
+  scrollHeight,
+  clientHeight,
+  scrollTop,
+}: {
+  scrollHeight: number;
+  clientHeight: number;
+  scrollTop: number;
+}) {
+  const el = document.createElement("main");
+  el.id = "main-content";
+  el.style.overflowY = "auto";
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: scrollHeight });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: clientHeight });
+  el.scrollTop = scrollTop;
+  document.body.appendChild(el);
+  return el;
+}
 
 function mockTop(element: HTMLElement, top: number) {
   vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
@@ -94,5 +116,59 @@ describe("issue-chat-scroll", () => {
     expect(shouldPreserveComposerViewport(composer)).toBe(true);
 
     composer.remove();
+  });
+
+  describe("isScrollTargetNearBottom", () => {
+    it("treats an element pinned to the bottom as near bottom", () => {
+      const el = makeMainContent({ scrollHeight: 1800, clientHeight: 900, scrollTop: 900 });
+      expect(isScrollTargetNearBottom({ type: "element", element: el })).toBe(true);
+      el.remove();
+    });
+
+    it("treats an element scrolled within the threshold as near bottom", () => {
+      const el = makeMainContent({ scrollHeight: 1800, clientHeight: 900, scrollTop: 820 });
+      expect(isScrollTargetNearBottom({ type: "element", element: el })).toBe(true);
+      el.remove();
+    });
+
+    it("returns false when the user has scrolled clearly above the bottom", () => {
+      const el = makeMainContent({ scrollHeight: 1800, clientHeight: 900, scrollTop: 200 });
+      expect(isScrollTargetNearBottom({ type: "element", element: el })).toBe(false);
+      el.remove();
+    });
+
+    it("treats short content (no overflow) as always pinned", () => {
+      const el = makeMainContent({ scrollHeight: 600, clientHeight: 900, scrollTop: 0 });
+      expect(isScrollTargetNearBottom({ type: "element", element: el })).toBe(true);
+      el.remove();
+    });
+  });
+
+  describe("scrollTargetToBottom", () => {
+    it("scrolls the element scroller to its full scroll height", () => {
+      const el = makeMainContent({ scrollHeight: 2400, clientHeight: 800, scrollTop: 100 });
+      const scrollToMock = vi.fn();
+      el.scrollTo = scrollToMock;
+
+      scrollTargetToBottom({ type: "element", element: el }, "smooth");
+
+      expect(scrollToMock).toHaveBeenCalledWith({ top: 2400, behavior: "smooth" });
+      el.remove();
+    });
+
+    it("falls back to window scroll when no scrollable main-content exists", () => {
+      const scrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+      Object.defineProperty(document.documentElement, "scrollHeight", {
+        configurable: true,
+        value: 5000,
+      });
+
+      const target = resolveIssueChatScrollTarget();
+      expect(target.type).toBe("window");
+      scrollTargetToBottom(target, "auto");
+
+      expect(scrollToMock).toHaveBeenCalledWith({ top: 5000, left: 0, behavior: "auto" });
+      scrollToMock.mockRestore();
+    });
   });
 });
