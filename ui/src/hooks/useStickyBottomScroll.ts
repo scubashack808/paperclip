@@ -9,7 +9,6 @@ import {
 
 export interface UseStickyBottomScrollOptions {
   messages: ReadonlyArray<unknown>;
-  isStreaming: boolean;
   disabled?: boolean;
   hasHashTarget?: boolean;
   threshold?: number;
@@ -35,7 +34,6 @@ function attachScrollListener(
 
 export function useStickyBottomScroll({
   messages,
-  isStreaming,
   disabled = false,
   hasHashTarget = false,
   threshold = STICKY_BOTTOM_THRESHOLD_PX,
@@ -44,11 +42,20 @@ export function useStickyBottomScroll({
   const [isPinned, setIsPinned] = useState(true);
   const initializedRef = useRef(false);
   const programmaticScrollRef = useRef(false);
+  const programmaticTimeoutRef = useRef<number | null>(null);
+  const lastMessagesLengthRef = useRef(0);
 
   const setPinned = useCallback((next: boolean) => {
     if (pinnedRef.current === next) return;
     pinnedRef.current = next;
     setIsPinned(next);
+  }, []);
+
+  const clearProgrammaticTimeout = useCallback(() => {
+    if (programmaticTimeoutRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(programmaticTimeoutRef.current);
+      programmaticTimeoutRef.current = null;
+    }
   }, []);
 
   const scrollToBottom = useCallback(
@@ -59,14 +66,28 @@ export function useStickyBottomScroll({
       scrollTargetToBottom(target, behavior);
       pinnedRef.current = true;
       setIsPinned(true);
-      // Clear the programmatic flag after the scroll settles. A single rAF is
-      // enough for "auto" / "instant"; smooth scrolls release on the next
-      // user-initiated scroll event.
-      window.requestAnimationFrame(() => {
-        programmaticScrollRef.current = false;
-      });
+
+      if (behavior === "smooth") {
+        // Smooth scrolls fire intermediate scroll events for ~200-500ms. The
+        // scroll handler clears the suppression only when it sees the position
+        // actually reach the bottom — otherwise mid-animation events would
+        // compute "not at bottom" and flicker the unpinned state. Safety
+        // timeout: release after 1s in case content grows during the animation
+        // and we never settle at the bottom.
+        clearProgrammaticTimeout();
+        programmaticTimeoutRef.current = window.setTimeout(() => {
+          programmaticScrollRef.current = false;
+          programmaticTimeoutRef.current = null;
+        }, 1000);
+      } else {
+        // Auto/instant scrolls complete in one frame; clear after rAF so the
+        // next user-initiated scroll is processed normally.
+        window.requestAnimationFrame(() => {
+          programmaticScrollRef.current = false;
+        });
+      }
     },
-    [],
+    [clearProgrammaticTimeout],
   );
 
   // Attach a scroll listener that updates pinned state from user scrolls.
@@ -75,14 +96,23 @@ export function useStickyBottomScroll({
     const target = resolveIssueChatScrollTarget();
 
     const handle = () => {
-      if (programmaticScrollRef.current) return;
       const nearBottom = isScrollTargetNearBottom(target, threshold);
+      if (programmaticScrollRef.current) {
+        if (nearBottom) {
+          programmaticScrollRef.current = false;
+          clearProgrammaticTimeout();
+        }
+        return;
+      }
       setPinned(nearBottom);
     };
 
     const detach = attachScrollListener(target, handle);
-    return detach;
-  }, [disabled, threshold, setPinned]);
+    return () => {
+      detach();
+      clearProgrammaticTimeout();
+    };
+  }, [disabled, threshold, setPinned, clearProgrammaticTimeout]);
 
   // First-mount: scroll to bottom once the thread has at least one message.
   // Defer to hash-link navigation when one is in play.
@@ -93,20 +123,28 @@ export function useStickyBottomScroll({
       initializedRef.current = true;
       pinnedRef.current = false;
       setIsPinned(false);
+      lastMessagesLengthRef.current = messages.length;
       return;
     }
     if (messages.length === 0) return;
     initializedRef.current = true;
+    lastMessagesLengthRef.current = messages.length;
     scrollToBottom("auto");
   }, [disabled, hasHashTarget, messages, scrollToBottom]);
 
-  // On message growth while pinned, follow the tail.
+  // On message growth while pinned, follow the tail. We use the snap behavior
+  // ("auto") even between full messages — chats feel better when new content
+  // appears instantly rather than animating in. The smooth animation is
+  // reserved for the explicit Jump-to-latest button click.
   useLayoutEffect(() => {
     if (disabled || !initializedRef.current) return;
+    const previousLength = lastMessagesLengthRef.current;
+    lastMessagesLengthRef.current = messages.length;
     if (!pinnedRef.current) return;
     if (messages.length === 0) return;
-    scrollToBottom(isStreaming ? "auto" : "smooth");
-  }, [disabled, messages, isStreaming, scrollToBottom]);
+    if (messages.length <= previousLength) return;
+    scrollToBottom("auto");
+  }, [disabled, messages, scrollToBottom]);
 
   return { isPinned, pinnedRef, scrollToBottom };
 }

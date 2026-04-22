@@ -136,16 +136,19 @@ export function IssueColumnPicker({
 export function InboxIssueMetaLeading({
   issue,
   isLive,
+  isQueued = false,
   showStatus = true,
   showIdentifier = true,
   statusSlot,
 }: {
   issue: Issue;
   isLive: boolean;
+  isQueued?: boolean;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
 }) {
+  const showQueued = !isLive && isQueued;
   return (
     <>
       {showStatus ? (
@@ -181,6 +184,27 @@ export function InboxIssueMetaLeading({
             )}
           >
             Live
+          </span>
+        </span>
+      )}
+      {showQueued && (
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
+            "bg-amber-500/10",
+          )}
+          title="A run is queued for this issue"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500/80" />
+          </span>
+          <span
+            className={cn(
+              "hidden text-[11px] font-medium sm:inline",
+              "text-amber-700 dark:text-amber-400",
+            )}
+          >
+            Queued
           </span>
         </span>
       )}

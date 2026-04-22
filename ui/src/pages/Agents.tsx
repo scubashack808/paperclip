@@ -87,17 +87,33 @@ export function Agents() {
     refetchInterval: 15_000,
   });
 
-  // Map agentId -> first live run + live run count
+  // Map agentId -> a representative run + per-status counts. "running" runs win
+  // over "queued" runs for the representative id so the link always jumps to the
+  // live execution when one exists.
   const liveRunByAgent = useMemo(() => {
-    const map = new Map<string, { runId: string; liveCount: number }>();
+    const map = new Map<
+      string,
+      { runId: string; runningCount: number; queuedCount: number; isRunning: boolean }
+    >();
     for (const r of runs ?? []) {
       if (r.status !== "running" && r.status !== "queued") continue;
       const existing = map.get(r.agentId);
+      const isRunning = r.status === "running";
       if (existing) {
-        existing.liveCount += 1;
+        if (isRunning) existing.runningCount += 1;
+        else existing.queuedCount += 1;
+        if (isRunning && !existing.isRunning) {
+          existing.runId = r.id;
+          existing.isRunning = true;
+        }
         continue;
       }
-      map.set(r.agentId, { runId: r.id, liveCount: 1 });
+      map.set(r.agentId, {
+        runId: r.id,
+        runningCount: isRunning ? 1 : 0,
+        queuedCount: isRunning ? 0 : 1,
+        isRunning,
+      });
     }
     return map;
   }, [runs]);
@@ -239,7 +255,8 @@ export function Agents() {
                         <LiveRunIndicator
                           agentRef={agentRouteRef(agent)}
                           runId={liveRunByAgent.get(agent.id)!.runId}
-                          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                          runningCount={liveRunByAgent.get(agent.id)!.runningCount}
+                          queuedCount={liveRunByAgent.get(agent.id)!.queuedCount}
                         />
                       ) : (
                         <StatusBadge status={agent.status} />
@@ -250,7 +267,8 @@ export function Agents() {
                         <LiveRunIndicator
                           agentRef={agentRouteRef(agent)}
                           runId={liveRunByAgent.get(agent.id)!.runId}
-                          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                          runningCount={liveRunByAgent.get(agent.id)!.runningCount}
+                          queuedCount={liveRunByAgent.get(agent.id)!.queuedCount}
                         />
                       )}
                       <span className="text-xs text-muted-foreground font-mono w-14 text-right">
@@ -311,7 +329,10 @@ function OrgTreeNode({
   node: OrgNode;
   depth: number;
   agentMap: Map<string, Agent>;
-  liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
+  liveRunByAgent: Map<
+    string,
+    { runId: string; runningCount: number; queuedCount: number; isRunning: boolean }
+  >;
   tab: FilterTab;
 }) {
   const agent = agentMap.get(node.id);
@@ -340,7 +361,8 @@ function OrgTreeNode({
               <LiveRunIndicator
                 agentRef={agent ? agentRouteRef(agent) : node.id}
                 runId={liveRunByAgent.get(node.id)!.runId}
-                liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                runningCount={liveRunByAgent.get(node.id)!.runningCount}
+                queuedCount={liveRunByAgent.get(node.id)!.queuedCount}
               />
             ) : (
               <StatusBadge status={node.status} />
@@ -351,7 +373,8 @@ function OrgTreeNode({
               <LiveRunIndicator
                 agentRef={agent ? agentRouteRef(agent) : node.id}
                 runId={liveRunByAgent.get(node.id)!.runId}
-                liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                runningCount={liveRunByAgent.get(node.id)!.runningCount}
+                queuedCount={liveRunByAgent.get(node.id)!.queuedCount}
               />
             )}
             {agent && (
@@ -384,24 +407,47 @@ function OrgTreeNode({
 function LiveRunIndicator({
   agentRef,
   runId,
-  liveCount,
+  runningCount,
+  queuedCount,
 }: {
   agentRef: string;
   runId: string;
-  liveCount: number;
+  runningCount: number;
+  queuedCount: number;
 }) {
+  const hasRunning = runningCount > 0;
+  if (hasRunning) {
+    const suffix = runningCount > 1 ? ` (${runningCount})` : "";
+    return (
+      <Link
+        to={`/agents/${agentRef}/runs/${runId}`}
+        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+        onClick={(e) => e.stopPropagation()}
+        title={queuedCount > 0 ? `${queuedCount} queued` : undefined}
+      >
+        <span className="relative flex h-2 w-2">
+          <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+        </span>
+        <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+          Live{suffix}
+          {queuedCount > 0 ? ` +${queuedCount}` : ""}
+        </span>
+      </Link>
+    );
+  }
+  if (queuedCount <= 0) return null;
   return (
     <Link
       to={`/agents/${agentRef}/runs/${runId}`}
-      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 hover:bg-amber-500/20 transition-colors no-underline"
       onClick={(e) => e.stopPropagation()}
     >
       <span className="relative flex h-2 w-2">
-        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500/80" />
       </span>
-      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-        Live{liveCount > 1 ? ` (${liveCount})` : ""}
+      <span className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+        Queued{queuedCount > 1 ? ` (${queuedCount})` : ""}
       </span>
     </Link>
   );

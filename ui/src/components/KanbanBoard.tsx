@@ -45,6 +45,7 @@ interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  queuedIssueIds?: Set<string>;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -55,11 +56,13 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  queuedIssueIds,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  queuedIssueIds?: Set<string>;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -96,6 +99,7 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              isQueued={queuedIssueIds?.has(issue.id)}
             />
           ))}
         </SortableContext>
@@ -110,11 +114,13 @@ function KanbanCard({
   issue,
   agents,
   isLive,
+  isQueued,
   isOverlay,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
+  isQueued?: boolean;
   isOverlay?: boolean;
 }) {
   const {
@@ -159,12 +165,22 @@ function KanbanCard({
           <span className="text-xs text-muted-foreground font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
-          {isLive && (
-            <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
+          {isLive ? (
+            <span
+              className="relative flex h-2 w-2 shrink-0 mt-0.5"
+              title="Live run"
+            >
               <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
             </span>
-          )}
+          ) : isQueued ? (
+            <span
+              className="relative flex h-2 w-2 shrink-0 mt-0.5"
+              title="Run queued"
+            >
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500/80" />
+            </span>
+          ) : null}
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
         <div className="flex items-center gap-2">
@@ -191,6 +207,7 @@ export function KanbanBoard({
   issues,
   agents,
   liveIssueIds,
+  queuedIssueIds,
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -268,6 +285,7 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            queuedIssueIds={queuedIssueIds}
           />
         ))}
       </div>

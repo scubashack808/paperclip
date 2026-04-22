@@ -7,13 +7,12 @@ import { useStickyBottomScroll } from "./useStickyBottomScroll";
 
 interface ProbeProps {
   messages: ReadonlyArray<unknown>;
-  isStreaming?: boolean;
   hasHashTarget?: boolean;
   onState: (state: { isPinned: boolean; scrollToBottom: (behavior?: ScrollBehavior) => void }) => void;
 }
 
-function Probe({ messages, isStreaming = false, hasHashTarget = false, onState }: ProbeProps) {
-  const result = useStickyBottomScroll({ messages, isStreaming, hasHashTarget });
+function Probe({ messages, hasHashTarget = false, onState }: ProbeProps) {
+  const result = useStickyBottomScroll({ messages, hasHashTarget });
   onState({ isPinned: result.isPinned, scrollToBottom: result.scrollToBottom });
   return null;
 }
@@ -124,7 +123,6 @@ describe("useStickyBottomScroll", () => {
       root.render(
         <Probe
           messages={[{ id: "m1" }, { id: "m2" }]}
-          isStreaming
           onState={(s) => states.push({ isPinned: s.isPinned })}
         />,
       );
@@ -162,7 +160,6 @@ describe("useStickyBottomScroll", () => {
       root.render(
         <Probe
           messages={[{ id: "m1" }, { id: "m2" }]}
-          isStreaming
           onState={(s) => states.push({ isPinned: s.isPinned })}
         />,
       );
@@ -199,6 +196,65 @@ describe("useStickyBottomScroll", () => {
     });
 
     expect(states.at(-1)?.isPinned).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("does not flicker the pinned state during a smooth scrollToBottom animation", () => {
+    const main = setupMainContent({ scrollHeight: 1800, clientHeight: 900, scrollTop: 200 });
+    const scrollToMock = vi.fn();
+    main.scrollTo = scrollToMock;
+
+    const root = createRoot(host);
+    const states: Array<{ isPinned: boolean }> = [];
+    let captured!: { isPinned: boolean; scrollToBottom: (behavior?: ScrollBehavior) => void };
+
+    act(() => {
+      root.render(
+        <Probe
+          messages={[{ id: "m1" }]}
+          onState={(s) => {
+            captured = s;
+            states.push({ isPinned: s.isPinned });
+          }}
+        />,
+      );
+    });
+
+    // User has scrolled up.
+    act(() => {
+      main.scrollTop = 200;
+      main.dispatchEvent(new Event("scroll"));
+    });
+    expect(states.at(-1)?.isPinned).toBe(false);
+
+    // Trigger a smooth scrollToBottom — the state should immediately go pinned.
+    states.length = 0;
+    act(() => {
+      captured.scrollToBottom("smooth");
+    });
+    expect(states.at(-1)?.isPinned).toBe(true);
+
+    // Simulate intermediate scroll events that the smooth animation fires while
+    // it is animating from scrollTop=200 toward scrollTop=900. None of these
+    // should flick the user back to unpinned, because we initiated the scroll.
+    states.length = 0;
+    for (const intermediate of [400, 600, 800]) {
+      act(() => {
+        main.scrollTop = intermediate;
+        main.dispatchEvent(new Event("scroll"));
+      });
+    }
+    expect(states.every((s) => s.isPinned)).toBe(true);
+
+    // Final scroll event lands at the bottom — handler clears the suppression.
+    // No setPinned is needed since pinnedRef was already true, so states stays
+    // empty (no extra render). The latest captured state is still pinned.
+    act(() => {
+      main.scrollTop = 900;
+      main.dispatchEvent(new Event("scroll"));
+    });
+    expect(captured.isPinned).toBe(true);
 
     act(() => root.unmount());
   });

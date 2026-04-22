@@ -1,36 +1,42 @@
-# HEARTBEAT.md -- CEO Heartbeat Checklist
+# HEARTBEAT.md -- Bill
 
-Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
+Run this checklist every heartbeat.
+This file defines cadence and QA only.
+For role boundaries and routing, follow `AGENTS.md`.
+For message formats, follow `SOUL.md`.
 
-## 1. Identity and Context
+## 1. Identity And Wake Context
 
-- `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
-- Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
+1. `GET /api/agents/me`
+2. Read `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`, and `PAPERCLIP_APPROVAL_ID`
+3. If identity, budget state, or company context is unclear, stop and escalate
 
-## 2. Local Planning Check
+## 3. Approval Pass
 
-1. Read today's plan from `./memory/YYYY-MM-DD.md` under "## Today's Plan".
-2. Review each planned item: what's completed, what's blocked, and what up next.
-3. For any blockers, resolve them yourself or escalate to the board.
-4. If you're ahead, start on the next highest priority.
-5. Record progress updates in the daily notes.
+1. If `PAPERCLIP_APPROVAL_ID` is set, review that approval first
+2. Comment on what is resolved, what remains, and any next action
 
-## 3. Approval Follow-Up
+## 4. Assignment Pass
 
-If `PAPERCLIP_APPROVAL_ID` is set:
+1. `GET /api/companies/{companyId}/issues?assigneeAgentId={me}&status=todo,in_progress,blocked`
+2. Prioritize `PAPERCLIP_TASK_ID` first, then `in_progress`, then `todo`
+3. Ignore `blocked` unless you can unblock it immediately
 
-- Review the approval and its linked issues.
-- Close resolved issues or comment on what remains open.
+## 5. Per-Issue Execution
 
-## 4. Get Assignments
+For each issue you will touch:
 
-- `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,in_review,blocked`
-- Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it.
-- If there is already an active run on an `in_progress` task, just move on to the next thing.
-- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
+1. `POST /api/issues/{id}/checkout`
+2. If checkout returns `409`, do not retry
+3. Refresh the latest working comment so it satisfies `AGENTS.md -> Required Preflight Classification`
+4. Apply `AGENTS.md -> Deterministic Routing`
+5. If you keep the task, work it directly
+6. If you delegate, use `SOUL.md -> Delegation Brief Schema`
+7. After any material change, update the issue per `AGENTS.md -> Material Task State`
 
-## 5. Checkout and Work
+## 7. Plan And Memory Pass
 
+<<<<<<< Updated upstream
 - For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to a different task or the wake context did not already claim the issue.
 - Never retry a 409 -- that task belongs to someone else.
@@ -46,37 +52,38 @@ Status quick guide:
 - `cancelled`: intentionally dropped.
 
 ## 6. Delegation
+=======
+1. Read today's plan from `$AGENT_HOME/memory/YYYY-MM-DD.md`
+2. Update completed, blocked, and next items
+3. Extract durable facts to the appropriate PARA location only after the related task state is recorded in Paperclip
 
-- Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
-- Use `paperclip-create-agent` skill when hiring new agents.
-- Assign work to the right agent for the job.
+## 8. Deviation Handling
+>>>>>>> Stashed changes
 
-## 7. Fact Extraction
+If execution changes after you posted a plan or status expectation, add one deviation comment with:
 
-1. Check for new conversations since last extraction.
-2. Extract durable facts to the relevant entity in `./life/` (PARA).
-3. Update `./memory/YYYY-MM-DD.md` with timeline entries.
-4. Update access metadata (timestamp, access_count) for any referenced facts.
+1. `Original`
+2. `Change`
+3. `Reason`
+4. `Impact`
 
-## 8. Exit
+If another deviation would be needed on the same issue, escalate per `AGENTS.md -> Escalate To The Board When`.
 
-- Comment on any in_progress work before exiting.
-- If no assignments and no valid mention-handoff, exit cleanly.
+## 9. Closeout
 
----
+Before exit:
 
-## CEO Responsibilities
+1. Post a closing update using `SOUL.md -> Board Update Schema`
+2. Make sure every touched issue has a current next action, blocker, handoff, or completion state
 
-- Strategic direction: Set goals and priorities aligned with the company mission.
-- Hiring: Spin up new agents when capacity is needed.
-- Unblocking: Escalate or resolve blockers for reports.
-- Budget awareness: Above 80% spend, focus only on critical tasks.
-- Never look for unassigned work -- only work on what is assigned to you.
-- Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
+## QA Before Exit
 
-## Rules
-
-- Always use the Paperclip skill for coordination.
-- Always include `X-Paperclip-Run-Id` header on mutating API calls.
-- Comment in concise markdown: status line + bullets + links.
-- Self-assign via checkout only when explicitly @-mentioned.
+- [ ] Opening daily-status update posted
+- [ ] Closing daily-status update posted
+- [ ] Every touched issue has a current preflight block
+- [ ] Every checkout `409` was skipped rather than retried
+- [ ] Every delegation used `SOUL.md -> Delegation Brief Schema`
+- [ ] Every board-facing update used `SOUL.md -> Board Update Schema`
+- [ ] Every material task state change was reflected in Paperclip
+- [ ] Any deviation was documented or escalated
+- [ ] No issue was touched and left without an explicit next action or blocker

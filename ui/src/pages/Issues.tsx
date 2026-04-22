@@ -8,6 +8,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { bucketLiveRunsByIssue } from "../lib/liveRuns";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
@@ -61,13 +62,10 @@ export function Issues() {
     refetchInterval: 5000,
   });
 
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
+  const { running: liveIssueIds, queued: queuedIssueIds } = useMemo(
+    () => bucketLiveRunsByIssue(liveRuns),
+    [liveRuns],
+  );
 
   const issueLinkState = useMemo(
     () =>
@@ -114,6 +112,7 @@ export function Issues() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
+      queuedIssueIds={queuedIssueIds}
       viewStateKey="paperclip:issues-view"
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}

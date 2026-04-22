@@ -25,6 +25,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { bucketLiveRunsByIssue } from "../lib/liveRuns";
 import { projectRouteRef } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
@@ -177,13 +178,10 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
+  const { running: liveIssueIds, queued: queuedIssueIds } = useMemo(
+    () => bucketLiveRunsByIssue(liveRuns),
+    [liveRuns],
+  );
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
@@ -208,6 +206,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
+      queuedIssueIds={queuedIssueIds}
       projectId={projectId}
       viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}

@@ -184,6 +184,7 @@ interface IssuesListProps {
   agents?: Agent[];
   projects?: ProjectOption[];
   liveIssueIds?: Set<string>;
+  queuedIssueIds?: Set<string>;
   projectId?: string;
   viewStateKey: string;
   issueLinkState?: unknown;
@@ -267,6 +268,7 @@ export function IssuesList({
   agents,
   projects,
   liveIssueIds,
+  queuedIssueIds,
   projectId,
   viewStateKey,
   issueLinkState,
@@ -869,6 +871,7 @@ export function IssuesList({
           issues={filtered}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          queuedIssueIds={queuedIssueIds}
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
@@ -998,6 +1001,7 @@ export function IssuesList({
                             <InboxIssueMetaLeading
                               issue={issue}
                               isLive={liveIssueIds?.has(issue.id) === true}
+                              isQueued={queuedIssueIds?.has(issue.id) === true}
                               showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                               statusSlot={(

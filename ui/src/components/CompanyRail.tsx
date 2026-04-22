@@ -158,7 +158,9 @@ export function CompanyRail() {
   const hasLiveAgentsByCompanyId = useMemo(() => {
     const result = new Map<string, boolean>();
     companyIds.forEach((companyId, index) => {
-      result.set(companyId, (liveRunsQueries[index]?.data?.length ?? 0) > 0);
+      const runs = liveRunsQueries[index]?.data ?? [];
+      const anyRunning = runs.some((run) => run.status === "running");
+      result.set(companyId, anyRunning);
     });
     return result;
   }, [companyIds, liveRunsQueries]);

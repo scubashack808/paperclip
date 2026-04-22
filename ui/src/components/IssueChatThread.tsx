@@ -2074,7 +2074,6 @@ export function IssueChatThread({
 
   const { isPinned, pinnedRef, scrollToBottom } = useStickyBottomScroll({
     messages,
-    isStreaming: isRunning,
     hasHashTarget: hashTargetsAComment,
   });
 
