@@ -160,6 +160,42 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+// --- session resolution cache (perf mitigation, 2026-05-19) ---
+// better-auth's api.getSession() is 250-450ms per call; it runs on every API request.
+// With browser issuing 6-10 concurrent calls per page, this serializes on the node event loop.
+// Cache by hashed cookie header for 30s. Includes negative-cache for null results.
+const SESSION_CACHE_TTL_MS = 30_000;
+const SESSION_CACHE_MAX_ENTRIES = 1000;
+const sessionCache = new Map<string, { expiresAt: number; result: BetterAuthSessionResult | null }>();
+function hashCookieKey(cookie: string): string {
+  return createHash("sha256").update(cookie).digest("hex").slice(0, 32);
+}
+async function resolveSessionCached(
+  req: Request,
+  resolve: (req: Request) => Promise<BetterAuthSessionResult | null>,
+): Promise<BetterAuthSessionResult | null> {
+  const cookie = req.header("cookie");
+  if (!cookie) {
+    return resolve(req);
+  }
+  const key = hashCookieKey(cookie);
+  const now = Date.now();
+  const cached = sessionCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    sessionCache.delete(key);
+    sessionCache.set(key, cached);
+    return cached.result;
+  }
+  const result = await resolve(req);
+  if (sessionCache.size >= SESSION_CACHE_MAX_ENTRIES) {
+    const oldestKey = sessionCache.keys().next().value;
+    if (oldestKey !== undefined) sessionCache.delete(oldestKey);
+  }
+  sessionCache.set(key, { expiresAt: now + SESSION_CACHE_TTL_MS, result });
+  return result;
+}
+// --- end session resolution cache ---
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -192,7 +228,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
         let session: BetterAuthSessionResult | null = null;
         try {
-          session = await opts.resolveSession(req);
+          session = await resolveSessionCached(req, opts.resolveSession);
         } catch (err) {
           logger.warn(
             { err, method: req.method, url: req.originalUrl },
