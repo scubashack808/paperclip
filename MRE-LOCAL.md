@@ -1,34 +1,84 @@
 # MRE-LOCAL: local changes on top of upstream Paperclip
 
-This VPS runs upstream Paperclip (github.com/paperclipai/paperclip) pinned to a tag,
-plus the local commit(s) below, committed on `master` directly on top of the tag.
-See exactly what is ours with: `git log <base-tag>..HEAD`.
+This VPS runs upstream Paperclip (`paperclipai/paperclip`) pinned to an exact canary tag plus the
+small local delta below. The source patch is carried in Git; the database patch is verified
+separately because it persists outside Git.
 
 ## Current base
-Pinned tag: canary/v2026.705.0-canary.0  (updated 2026-07-05)
 
-## Local commits (what's ours)
-1. MRE-LOCAL: auth session cache  (server/src/middleware/auth.ts)
-   Caches better-auth getSession() (was 250-450ms x 6-10 calls/page) for 30s, 1000-entry LRU.
-   Verify in build:  grep -c resolveSessionCached server/dist/middleware/auth.js   (expect >= 2)
+Pinned tag: `canary/v2026.805.0-canary.2`
 
-## DB-side (not a code commit; persists across code updates)
-- Postgres partial index activity_log_issue_lookup_idx (issues-list 5954ms -> 3.6ms).
-  Recreate only on a fresh DB:
-    CREATE INDEX CONCURRENTLY IF NOT EXISTS activity_log_issue_lookup_idx
-      ON activity_log (company_id, entity_id, created_at DESC) WHERE entity_type='issue';
+Pinned commit: `d114c4925e168174895c458218674054d0ef2cc6`
 
-## Dropped 2026-07-05 (upstream integrated these)
-- issues.ts Date .toISOString() coercion  (upstream issues.ts already has it)
-- issues.ts run-log try/catch             (upstream issues.ts already wraps it)
+Update date: 2026-08-04 HST
+
+## Thin patches
+
+### PC-T01: auth session cache (source)
+
+- File: `server/src/middleware/auth.ts`
+- Behavior: cache Better Auth `getSession()` results by a SHA-256-derived cookie key for 30 seconds
+  with a 1,000-entry LRU cap. The original live measurement was 250-450 ms per uncached lookup and
+  a 97% cache hit rate under normal traffic.
+- Trade-off: logout or session revocation can take up to 30 seconds to take effect.
+- Upstream disposition at the pinned target: still distinct. Upstream changed the same middleware
+  substantially but does not provide an equivalent session-result cache.
+- Source proof: focused auth middleware tests plus the full repository suite.
+- Artifact proof:
+
+  ```sh
+  grep -c resolveSessionCached server/dist/middleware/auth.js
+  ```
+
+  Expected: at least `2`.
+
+### PC-T02: issue activity lookup index (database)
+
+- Object: PostgreSQL partial index `activity_log_issue_lookup_idx`.
+- Behavior: accelerate the correlated activity lookup in `issueCanonicalLastActivityAtExpr`.
+- Original live measurement: issue-list latency fell from 5,954 ms to 3.6 ms.
+- Upstream disposition at the pinned target: still distinct. Upstream retains the correlated query;
+  its generic activity indexes do not cover company, issue entity, and descending activity time in
+  the same partial index.
+- Recreate on a fresh database only:
+
+  ```sql
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS activity_log_issue_lookup_idx
+    ON activity_log (company_id, entity_id, created_at DESC)
+    WHERE entity_type = 'issue';
+  ```
+
+- Live proof: query `pg_indexes` for the exact definition after every restore or update.
+
+## Retired patches
+
+Retired on 2026-07-05 and rechecked against the current target:
+
+- `issues.ts` Date `.toISOString()` coercion. Upstream supplies it.
+- `issues.ts` run-log best-effort `try/catch`. Upstream supplies it.
 
 ## Update to a newer upstream tag
-  git fetch origin --tags
-  git rebase <new-tag>        # replays the MRE-LOCAL commit(s); resolve auth.ts if it conflicts
-  sudo -u paperclip -H bash -lc 'cd /root/paperclip && pnpm install --frozen-lockfile --store-dir /home/paperclip/.pnpm-store && pnpm build'
-  sudo systemctl restart paperclip
-  systemctl is-active paperclip && grep -c resolveSessionCached server/dist/middleware/auth.js
+
+Do not build the new revision for the first time in `/root/paperclip`, and do not make cutover the
+first run against production-shaped state.
+
+1. Freeze an exact upstream tag/commit and create a clean worktree.
+2. Reconcile PC-T01 by behavior against the target; do not accept a clean textual replay as proof.
+3. Verify whether PC-T02 is still needed by inspecting both the target query and target indexes.
+4. Install, typecheck, run the full relevant test suite, and build as the `paperclip` user in the
+   isolated worktree.
+5. Seed an isolated Paperclip worktree instance from a verified copy of live state. Keep its port,
+   database, instance directory, scheduler, routines, agents, service, and global integrations
+   separate from production. Exercise the exact built candidate there before cutover.
+6. Before live mutation, create and verify a durable database backup plus the current source commit,
+   service definition, instance configuration, uploads, workspaces, and secrets-key recovery basis.
+7. Move the live checkout to the exact proven candidate, request an appropriate guarded restart,
+   then verify service health, migrations, both thin patches, live UI/API behavior, and any restart
+   continuity report.
 
 ## Backups
-Never deleted. Ad-hoc DB backups ship to scubashack:VPS-Storage/archives/ via rclone copy
-(hash-verified), then the local copy is removed. See backup.sh for the hourly pattern.
+
+Hourly logical database backups live under the active instance's `data/backups/` directory. Ad-hoc
+cutover backups also ship to `scubashack:VPS-Storage/archives/` by hash-verified `rclone copy`.
+Database dumps alone do not include uploads, workspaces, instance configuration, or the local
+encrypted-secrets master key; a cutover recovery basis must cover those separately.

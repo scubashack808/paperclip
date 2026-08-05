@@ -8,11 +8,14 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  canBoardManageRuntime,
   canBoardResolveRecoveryAction,
   IssueDetail,
+  readRecoveryReconcileWorkspaceId,
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -72,6 +75,12 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/issues/PAP-1",
+  search: "",
+  hash: "",
+  state: null as unknown,
+}));
 const mockOpenPanel = vi.hoisted(() => vi.fn());
 const mockClosePanel = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
@@ -148,7 +157,7 @@ vi.mock("@/lib/router", () => ({
   } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={to} {...props}>{children}</a>
   ),
-  useLocation: () => ({ pathname: "/issues/PAP-1", search: "", hash: "", state: null }),
+  useLocation: () => mockLocation,
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
   useParams: () => ({ issueId: "PAP-1" }),
@@ -231,6 +240,14 @@ vi.mock("../components/IssueChatThread", () => ({
   IssueChatThread: (props: {
     onWorkModeChange?: (workMode: string) => void;
     issueWorkMode?: string;
+    comments?: Array<{
+      body: string;
+      clientStatus?: string;
+      queueState?: string;
+      queueTargetRunId?: string | null;
+    }>;
+    onAdd?: (body: string) => Promise<void>;
+    onInterruptQueued?: (runId: string) => Promise<void>;
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
     stoppingRunLabel?: string;
@@ -263,6 +280,13 @@ vi.mock("../components/IssueChatThread", () => ({
       </div>
     );
   },
+}));
+
+// The redesign thread pulls in the MarkdownEditor composer, whose @mdxeditor
+// dependency cannot load under jsdom's CSSOM. These tests exercise the legacy
+// (flag-off) path, so an inert stub keeps the suite unit-scoped.
+vi.mock("../components/TaskChatThread", () => ({
+  TaskChatThread: () => <div data-testid="task-chat-thread">Task chat thread</div>,
 }));
 
 vi.mock("../components/IssueDocumentsSection", () => ({
@@ -314,13 +338,36 @@ vi.mock("../components/ScrollToBottom", () => ({
 }));
 
 vi.mock("../components/StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
-  ),
+  StatusIcon: ({
+    status,
+    blockerAttention,
+    onChange,
+  }: {
+    status: string;
+    blockerAttention?: Issue["blockerAttention"];
+    onChange?: (status: string) => void;
+  }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change status (current: ${status})`}
+      data-status-icon-state={blockerAttention?.state}
+      onClick={() => onChange("done")}
+    >
+      {status}
+    </button>
+  ) : <span data-status-icon-state={blockerAttention?.state}>{status}</span>,
 }));
 
 vi.mock("../components/PriorityIcon", () => ({
-  PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
+  PriorityIcon: ({ priority, onChange }: { priority: string; onChange?: (priority: string) => void }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change priority (current: ${priority})`}
+      onClick={() => onChange("high")}
+    >
+      {priority}
+    </button>
+  ) : <span>{priority}</span>,
 }));
 
 vi.mock("../components/ApprovalCard", () => ({
@@ -944,6 +991,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
+    mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
     mockActivityApi.forIssue.mockResolvedValue([]);
@@ -976,6 +1024,11 @@ describe("IssueDetail", () => {
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
+    mockNavigate.mockClear();
+    mockLocation.pathname = "/issues/PAP-1";
+    mockLocation.search = "";
+    mockLocation.hash = "";
+    mockLocation.state = null;
   });
 
   afterEach(async () => {
@@ -1011,6 +1064,108 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("updates status and priority from the task header controls", async () => {
+    const issue = createIssue({ status: "todo", priority: "medium" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockImplementation(async (_issueId: string, data: Record<string, unknown>) => ({
+      ...issue,
+      ...data,
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: todo)"]',
+    );
+    const priorityButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change priority (current: medium)"]',
+    );
+    expect(statusButton).not.toBeNull();
+    expect(priorityButton).not.toBeNull();
+
+    await act(async () => {
+      statusButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { status: "done" });
+    });
+
+    await act(async () => {
+      priorityButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { priority: "high" });
+    });
+
+    mockIssuesApi.update.mockReset();
+  });
+
+  it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
+    const otherIssue = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Keep me in inbox" });
+    const archiveRequest = createDeferred<{ id: string; archivedAt: Date }>();
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.archiveFromInbox.mockReturnValue(archiveRequest.promise);
+
+    const mineKey = [
+      ...queryKeys.issues.listMineByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const touchedKey = [
+      ...queryKeys.issues.listTouchedByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const unreadKey = queryKeys.issues.listUnreadTouchedByMe("company-1");
+    queryClient.setQueryData<Issue[]>(mineKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(touchedKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(unreadKey, [issue, otherIssue]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const archiveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive from inbox"]',
+    );
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      archiveRequest.resolve({ id: "issue-1", archivedAt: new Date() });
+    });
+    await flushReact();
+
+    expect(mockNavigate).toHaveBeenCalledWith("/inbox/mine", { replace: true });
+    expect(mockPushToast).toHaveBeenCalledWith({ title: "Task archived from inbox", tone: "success" });
   });
 
   it("shows assignee and originating avatars in the issue header metadata", async () => {
@@ -1192,6 +1347,95 @@ describe("IssueDetail", () => {
     const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { comments?: Array<{ id: string; queueState?: string }> };
     const freshComment = props.comments?.find((comment) => comment.id === "comment-fresh");
     expect(freshComment?.queueState).toBeUndefined();
+  });
+
+  it("queues messages against a queued live run and interrupts that exact run", async () => {
+    const postedComment = createDeferred<IssueComment>();
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      executionRunId: "run-queued",
+    }));
+    mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+    mockHeartbeatsApi.cancel.mockResolvedValue({});
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-queued",
+        status: "queued",
+        invocationSource: "issue",
+        triggerDetail: null,
+        contextCommentId: null,
+        contextWakeCommentId: null,
+        startedAt: null,
+        finishedAt: null,
+        createdAt: "2026-04-21T00:00:01.000Z",
+        agentId: "agent-1",
+        agentName: "Coder",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+    };
+    await act(async () => {
+      void props.onAdd("Queued run message");
+      await Promise.resolve();
+    });
+    await flushReact();
+
+    const queuedProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const optimisticComment = queuedProps.comments?.find((comment) => comment.body === "Queued run message");
+    expect(optimisticComment).toMatchObject({
+      clientStatus: "queued",
+      queueState: "queued",
+      queueTargetRunId: "run-queued",
+    });
+
+    await act(async () => {
+      postedComment.resolve(createIssueComment({ body: "Queued run message" }));
+    });
+    await flushReact();
+
+    const persistedProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const persistedComment = persistedProps.comments?.find((comment) => comment.body === "Queued run message");
+    expect(persistedComment).toMatchObject({
+      queueState: "queued",
+      queueTargetRunId: "run-queued",
+    });
+
+    await act(async () => {
+      await persistedProps.onInterruptQueued(persistedComment!.queueTargetRunId!);
+    });
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-queued");
+    mockHeartbeatsApi.cancel.mockClear();
   });
 
   it("does not optimistically queue a fresh comment from an unlocked stale active-run cache", async () => {
@@ -2367,7 +2611,7 @@ describe("IssueDetail", () => {
 
     const dialogContent = container.querySelector('[data-slot="dialog-content"]') as HTMLDivElement | null;
     expect(dialogContent).toBeTruthy();
-    expect(dialogContent!.className).toContain("max-h-[calc(100dvh-2rem)]");
+    expect(dialogContent!.className).toContain("max-h-(--sz-calc-18)");
     expect(dialogContent!.className).toContain("overflow-hidden");
     expect(dialogContent!.className).toContain("flex-col");
 
@@ -2436,6 +2680,132 @@ describe("canBoardResolveRecoveryAction", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("canBoardManageRuntime", () => {
+  it("falls back to companyIds when memberships are not populated", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("denies viewers the runtime-manage-gated break-glass affordance", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "viewer",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "operator",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("readRecoveryReconcileWorkspaceId", () => {
+  const makeAction = (evidence: Record<string, unknown>, kind = "workspace_validation") =>
+    ({ kind, evidence } as unknown as Parameters<typeof readRecoveryReconcileWorkspaceId>[0]);
+
+  it("returns null when the action is missing", () => {
+    expect(readRecoveryReconcileWorkspaceId(null)).toBeNull();
+    expect(readRecoveryReconcileWorkspaceId(undefined)).toBeNull();
+  });
+
+  it("returns null for non-workspace_validation actions even with a workspace id in evidence", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction(
+          { workspaceValidation: { persistedExecutionWorkspaceId: "ws-1" } },
+          "stranded_assigned_issue",
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it("prefers persistedExecutionWorkspaceId (git_worktree_branch_incoherence shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_branch_incoherence",
+            persistedExecutionWorkspaceId: "ws-diverged",
+            executionWorkspaceId: "ws-other",
+          },
+        }),
+      ),
+    ).toBe("ws-diverged");
+  });
+
+  it("falls back to executionWorkspaceId (git_worktree_not_reusable shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_not_reusable",
+            executionWorkspaceId: "ws-not-reusable",
+          },
+        }),
+      ),
+    ).toBe("ws-not-reusable");
+  });
+
+  it("returns null when the evidence carries no workspace reference (so the caller falls back to the page-level id)", () => {
+    expect(readRecoveryReconcileWorkspaceId(makeAction({}))).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { reason: "git_worktree_branch_incoherence" } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores non-string / empty workspace ids", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: "" } }),
+      ),
+    ).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: 42 } }),
+      ),
+    ).toBeNull();
   });
 });
 
