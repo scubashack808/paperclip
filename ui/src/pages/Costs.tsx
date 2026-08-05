@@ -28,7 +28,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import { billingTypeDisplayName, cn, formatCents, formatCostOrEstimated, formatTokens, providerDisplayName } from "../lib/utils";
+import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -80,18 +80,18 @@ function MetricTile({
   icon: ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="border border-border p-4">
+    <Card className="block p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+          <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{label}</div>
           <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
           <div className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</div>
         </div>
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-border">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border">
           <Icon className="h-4 w-4 text-muted-foreground" />
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -204,7 +204,7 @@ export function Costs() {
     queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId) });
   };
 
   const policyMutation = useMutation({
@@ -554,6 +554,7 @@ export function Costs() {
                   variant={preset === key ? "secondary" : "ghost"}
                   size="sm"
                   onClick={() => setPreset(key)}
+                  aria-pressed={preset === key}
                 >
                   {PRESET_LABELS[key]}
                 </Button>
@@ -581,8 +582,8 @@ export function Costs() {
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label={spendData?.summary.spendCents === 0 && (spendData?.summary.estimatedCostCents ?? 0) > 0 ? "Est. API cost" : "Inference spend"}
-              value={formatCostOrEstimated(spendData?.summary.spendCents ?? 0, spendData?.summary.estimatedCostCents ?? 0)}
+              label="Inference spend"
+              value={formatCents(spendData?.summary.spendCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
             />
@@ -597,7 +598,7 @@ export function Costs() {
                 activeBudgetIncidents.length > 0
                   ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
                   : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                    ? `${formatCostOrEstimated(spendData.summary.spendCents, spendData.summary.estimatedCostCents)} of ${formatCents(spendData.summary.budgetCents)}`
+                    ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)}`
                     : "No monthly cap configured"
               }
               icon={Coins}
@@ -654,7 +655,7 @@ export function Costs() {
                 </div>
               ) : null}
 
-              <div className="grid gap-4 xl:grid-cols-[1.3fr,1fr]">
+              <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
                     <CardTitle className="text-base">Inference ledger</CardTitle>
@@ -666,11 +667,8 @@ export function Costs() {
                     <div className="flex flex-wrap items-end justify-between gap-3">
                       <div>
                         <div className="text-3xl font-semibold tabular-nums">
-                          {formatCostOrEstimated(spendData?.summary.spendCents ?? 0, spendData?.summary.estimatedCostCents ?? 0)}
+                          {formatCents(spendData?.summary.spendCents ?? 0)}
                         </div>
-                        {spendData?.summary.spendCents === 0 && (spendData?.summary.estimatedCostCents ?? 0) > 0 ? (
-                          <div className="mt-0.5 text-xs text-muted-foreground">est. API cost · max plan</div>
-                        ) : null}
                         <div className="mt-1 text-sm text-muted-foreground">
                           {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                             ? `Budget ${formatCents(spendData.summary.budgetCents)}`
@@ -678,7 +676,7 @@ export function Costs() {
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">usage</div>
+                        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">usage</div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
                           {formatTokens(inferenceTokenTotal)}
                         </div>
@@ -689,12 +687,12 @@ export function Costs() {
                         <div className="h-2 overflow-hidden bg-muted">
                           <div
                             className={cn(
-                              "h-full transition-[width,background-color] duration-150",
+                              "h-full transition-(--tp-width-background-color) duration-150",
                               spendData.summary.utilizationPercent > 90
-                                ? "bg-red-400"
+                                ? "bg-(--status-task-blocked)"
                                 : spendData.summary.utilizationPercent > 70
-                                  ? "bg-yellow-400"
-                                  : "bg-emerald-400",
+                                  ? "bg-(--status-task-todo)"
+                                  : "bg-(--status-task-done)",
                             )}
                             style={{ width: `${Math.min(100, spendData.summary.utilizationPercent)}%` }}
                           />
@@ -702,28 +700,6 @@ export function Costs() {
                         <div className="text-xs text-muted-foreground">
                           {spendData.summary.utilizationPercent}% of monthly budget consumed in this range.
                         </div>
-                      </div>
-                    ) : null}
-                    {(spendData?.summary.unknownModelIds?.length ?? 0) > 0 ? (
-                      <div className="border border-yellow-500/40 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
-                        Pricing unknown for{" "}
-                        <span className="font-mono">
-                          {(spendData?.summary.unknownModelIds ?? []).join(", ")}
-                        </span>
-                        . Tokens counted; estimate excludes these models until pricing is added.
-                      </div>
-                    ) : null}
-                    {spendData?.summary.pricingSourceFetchedAt ? (
-                      <div className="text-[11px] text-muted-foreground">
-                        Rates as of {spendData.summary.pricingSourceFetchedAt} —{" "}
-                        <a
-                          href={spendData.summary.pricingSourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline decoration-dotted underline-offset-2 hover:text-foreground"
-                        >
-                          source
-                        </a>
                       </div>
                     ) : null}
                   </CardContent>
@@ -738,7 +714,7 @@ export function Costs() {
                 />
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-[1.25fr,0.95fr]">
+              <div className="grid gap-4 xl:grid-cols-(--gtc-32)">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
                     <CardTitle className="text-base">By agent</CardTitle>
@@ -770,7 +746,7 @@ export function Costs() {
                                 {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                               </div>
                               <div className="text-right text-sm tabular-nums">
-                                <div className="font-medium">{formatCostOrEstimated(row.costCents, row.estimatedCostCents)}</div>
+                                <div className="font-medium">{formatCents(row.costCents)}</div>
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -789,9 +765,7 @@ export function Costs() {
                             {isExpanded && modelRows.length > 0 ? (
                               <div className="mt-3 space-y-2 border-l border-border pl-4">
                                 {modelRows.map((modelRow) => {
-                                  const effectiveCost = row.costCents > 0 ? row.costCents : row.estimatedCostCents;
-                                  const effectiveModelCost = modelRow.costCents > 0 ? modelRow.costCents : modelRow.estimatedCostCents;
-                                  const sharePct = effectiveCost > 0 ? Math.round((effectiveModelCost / effectiveCost) * 100) : 0;
+                                  const sharePct = row.costCents > 0 ? Math.round((modelRow.costCents / row.costCents) * 100) : 0;
                                   return (
                                     <div
                                       key={`${modelRow.provider}:${modelRow.model}:${modelRow.billingType}`}
@@ -809,7 +783,7 @@ export function Costs() {
                                       </div>
                                       <div className="text-right tabular-nums">
                                         <div className="font-medium">
-                                          {formatCostOrEstimated(modelRow.costCents, modelRow.estimatedCostCents)}
+                                          {formatCents(modelRow.costCents)}
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
                                         <div className="text-muted-foreground">
@@ -832,7 +806,7 @@ export function Costs() {
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
                       <CardTitle className="text-base">By project</CardTitle>
-                      <CardDescription>Run costs attributed through project-linked issues.</CardDescription>
+                      <CardDescription>Run costs attributed through project-linked tasks.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2 px-5 pb-5 pt-2">
                       {(spendData?.byProject.length ?? 0) === 0 ? (
@@ -844,7 +818,7 @@ export function Costs() {
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCostOrEstimated(row.costCents, row.estimatedCostCents)}</span>
+                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
                           </div>
                         ))
                       )}
@@ -865,7 +839,7 @@ export function Costs() {
             <p className="text-sm text-destructive">{(budgetError as Error).message}</p>
           ) : (
             <>
-              <Card className="border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))]">
+              <Card className="border-border/70 bg-(image:--gradient-extract-2)">
                 <CardHeader className="px-5 pt-5 pb-3">
                   <CardTitle className="text-base">Budget control plane</CardTitle>
                   <CardDescription>
@@ -1100,7 +1074,7 @@ export function Costs() {
                 eventCount={financeData?.summary.eventCount ?? 0}
               />
 
-              <div className="grid gap-4 xl:grid-cols-[1.2fr,0.95fr]">
+              <div className="grid gap-4 xl:grid-cols-(--gtc-33)">
                 <div className="space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
