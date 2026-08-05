@@ -7,28 +7,30 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { heartbeatsApi } from "../api/heartbeats";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents, formatCostOrEstimated, formatTokens } from "../lib/utils";
+import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { Card } from "@/components/ui/card";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 
-const DASHBOARD_HEARTBEAT_RUN_LIMIT = 100;
+const DASHBOARD_ACTIVITY_LIMIT = 10;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -37,7 +39,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openOnboarding } = useDialog();
+  const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -54,17 +56,33 @@ export function Dashboard() {
     setBreadcrumbs([{ label: "Dashboard" }]);
   }, [setBreadcrumbs]);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.dashboard(selectedCompanyId!),
+  const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
+  const sharedDashboard = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "dashboard",
+    queryKey: dashboardQueryKey,
+    enabled: !!selectedCompanyId,
+  });
+  const { data, isLoading, error, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+    queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  usePublishSharedQueryData(sharedDashboard, data, dashboardUpdatedAt);
 
-  const { data: activity } = useQuery({
-    queryKey: queryKeys.activity(selectedCompanyId!),
-    queryFn: () => activityApi.list(selectedCompanyId!),
+  const activityQueryKey = [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }] as const;
+  const sharedActivity = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: `activity:limit:${DASHBOARD_ACTIVITY_LIMIT}`,
+    queryKey: activityQueryKey,
     enabled: !!selectedCompanyId,
   });
+  const { data: activity, dataUpdatedAt: activityUpdatedAt } = useQuery({
+    queryKey: activityQueryKey,
+    queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
+    enabled: !!selectedCompanyId,
+  });
+  usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
 
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
@@ -73,14 +91,8 @@ export function Dashboard() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  const { data: runs } = useQuery({
-    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", DASHBOARD_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, DASHBOARD_HEARTBEAT_RUN_LIMIT),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
 
@@ -226,19 +238,19 @@ export function Dashboard() {
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
-            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] px-4 py-3">
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-(image:--gradient-extract-1) px-4 py-3">
               <div className="flex items-start gap-2.5">
-                <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
+                <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
                 <div>
-                  <p className="text-sm font-medium text-red-50">
+                  <p className="text-sm font-medium text-red-950 dark:text-red-50">
                     {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
                   </p>
-                  <p className="text-xs text-red-100/70">
+                  <p className="text-xs text-red-900/70 dark:text-red-100/70">
                     {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
                   </p>
                 </div>
               </div>
-              <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
+              <Link to="/costs" className="text-sm underline underline-offset-2 text-red-900 dark:text-red-100">
                 Open budgets
               </Link>
             </div>
@@ -272,25 +284,14 @@ export function Dashboard() {
             />
             <MetricCard
               icon={DollarSign}
-              value={formatCostOrEstimated(data.costs.monthSpendCents, data.costs.estimatedCostCents)}
-              label={data.costs.monthSpendCents === 0 && data.costs.estimatedCostCents > 0 ? "Est. API Cost" : "Month Spend"}
+              value={formatCents(data.costs.monthSpendCents)}
+              label="Month Spend"
               to="/costs"
               description={
                 <span>
-                  {data.costs.monthSpendCents === 0 && data.costs.estimatedCostCents > 0
-                    ? `${formatTokens(data.costs.inputTokens + data.costs.cachedInputTokens + data.costs.outputTokens)} tokens · max plan`
-                    : data.costs.monthBudgetCents > 0
-                      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                      : "Unlimited budget"}
-                  {(data.costs.unknownModelIds?.length ?? 0) > 0 ? (
-                    <>
-                      {" · "}
-                      <span className="text-yellow-600 dark:text-yellow-400">
-                        pricing unknown for {data.costs.unknownModelIds.length} model
-                        {data.costs.unknownModelIds.length === 1 ? "" : "s"}
-                      </span>
-                    </>
-                  ) : null}
+                  {data.costs.monthBudgetCents > 0
+                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                    : "Unlimited budget"}
                 </span>
               }
             />
@@ -309,18 +310,20 @@ export function Dashboard() {
             />
           </div>
 
+          <SmokeLabDashboardCard companyId={selectedCompanyId!} />
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart runs={runs ?? []} />
+              <RunActivityChart activity={data.runActivity} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart runs={runs ?? []} />
+              <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
 
@@ -328,6 +331,7 @@ export function Dashboard() {
             slotTypes={["dashboardWidget"]}
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
+            // design-allow(card-pattern): class-string prop consumed by the plugin outlet; a component can't be passed here (C5a Run 3)
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"
           />
 
@@ -338,7 +342,7 @@ export function Dashboard() {
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                   Recent Activity
                 </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <Card className="block py-0 divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -350,7 +354,7 @@ export function Dashboard() {
                       className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
                     />
                   ))}
-                </div>
+                </Card>
               </div>
             )}
 
@@ -360,11 +364,11 @@ export function Dashboard() {
                 Recent Tasks
               </h3>
               {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
+                <Card className="block p-4">
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
-                </div>
+                </Card>
               ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <Card className="block py-0 divide-y divide-border overflow-hidden">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
@@ -374,7 +378,7 @@ export function Dashboard() {
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         {/* Status icon - left column on mobile */}
                         <span className="shrink-0 sm:hidden">
-                          <StatusIcon status={issue.status} />
+                          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
                         </span>
 
                         {/* Right column on mobile: title + metadata stacked */}
@@ -383,7 +387,7 @@ export function Dashboard() {
                             {issue.title}
                           </span>
                           <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
+                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} /></span>
                             <span className="text-xs font-mono text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
@@ -402,7 +406,7 @@ export function Dashboard() {
                       </div>
                     </Link>
                   ))}
-                </div>
+                </Card>
               )}
             </div>
           </div>
@@ -412,4 +416,3 @@ export function Dashboard() {
     </div>
   );
 }
-

@@ -1,6 +1,9 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
+
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
@@ -29,7 +32,11 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
+  "cursor_cloud",
   "gemini_local",
+  "grok_local",
+  "hermes_gateway",
+  "hermes_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -42,6 +49,7 @@ export const AGENT_ROLES = [
   "cto",
   "cmo",
   "cfo",
+  "security",
   "engineer",
   "designer",
   "pm",
@@ -57,6 +65,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   cto: "CTO",
   cmo: "CMO",
   cfo: "CFO",
+  security: "Security",
   engineer: "Engineer",
   designer: "Designer",
   pm: "PM",
@@ -65,6 +74,26 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   researcher: "Researcher",
   general: "General",
 };
+
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
+
+// Config keys owned by Paperclip/company state rather than one concrete adapter.
+// `paperclipSkillSync` is persisted in adapterConfig but must survive adapter swaps.
+export const ADAPTER_AGNOSTIC_KEYS = [
+  "env",
+  "promptTemplate",
+  "instructionsFilePath",
+  "cwd",
+  "timeoutSec",
+  "graceSec",
+  "bootstrapPromptTemplate",
+  "paperclipSkillSync",
+] as const;
+export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
+
+export const MODEL_PROFILE_KEYS = ["cheap"] as const;
+export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 
 export const AGENT_ICON_NAMES = [
   "bot",
@@ -111,6 +140,56 @@ export const AGENT_ICON_NAMES = [
 ] as const;
 export type AgentIconName = (typeof AGENT_ICON_NAMES)[number];
 
+/**
+ * Curated Lucide icon set for projects (PAP-68 part 3).
+ *
+ * The first entry, `"folder"`, is the default for any project without an
+ * explicit icon. The remaining entries reuse much of the agent icon set plus a
+ * handful of folder/structure icons that read well at small tile sizes.
+ */
+export const PROJECT_ICON_NAMES = [
+  "folder",
+  "rocket",
+  "code",
+  "terminal",
+  "database",
+  "globe",
+  "package",
+  "boxes",
+  "box",
+  "layers",
+  "briefcase",
+  "compass",
+  "target",
+  "flame",
+  "zap",
+  "star",
+  "bug",
+  "wrench",
+  "hammer",
+  "lightbulb",
+  "sparkles",
+  "shield",
+  "lock",
+  "search",
+  "cog",
+  "brain",
+  "cpu",
+  "git-branch",
+  "file-code",
+  "puzzle",
+  "gem",
+  "atom",
+  "heart",
+  "mail",
+  "message-square",
+  "crown",
+  "radar",
+  "telescope",
+  "hexagon",
+] as const;
+export type ProjectIconName = (typeof PROJECT_ICON_NAMES)[number];
+
 export const ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -134,12 +213,241 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
+export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
+export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
+export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
-export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution"] as const;
-export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
+export const SUMMARY_SLOT_SCOPE_KINDS = ["project", "workspaces_overview", "project_workspace"] as const;
+export type SummarySlotScopeKind = (typeof SUMMARY_SLOT_SCOPE_KINDS)[number];
+export const SUMMARY_SLOT_KEYS = ["header"] as const;
+export type SummarySlotKey = (typeof SUMMARY_SLOT_KEYS)[number];
+export const SUMMARY_SLOT_STATUSES = ["idle", "generating", "failed"] as const;
+export type SummarySlotStatus = (typeof SUMMARY_SLOT_STATUSES)[number];
+
+export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
+export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
+export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
+export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_DENSITIES = ["compact"] as const;
+export type IssueCommentPresentationDensity = (typeof ISSUE_COMMENT_PRESENTATION_DENSITIES)[number];
+
+export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
+  "text",
+  "code",
+  "key_value",
+  "issue_link",
+  "agent_link",
+  "run_link",
+] as const;
+export type IssueCommentMetadataRowType = (typeof ISSUE_COMMENT_METADATA_ROW_TYPES)[number];
+
+export function clampIssueRequestDepth(value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.min(MAX_ISSUE_REQUEST_DEPTH, Math.max(0, Math.floor(value)));
+}
+
+export const ISSUE_THREAD_INTERACTION_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "request_item_verdicts",
+] as const;
+export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES = [
+  "board_only",
+  "board_or_agents",
+] as const;
+export type IssueThreadInteractionResolverPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)[number];
+
+export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
+export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
+
+export const ISSUE_THREAD_INTERACTION_STATUSES = [
+  "pending",
+  "accepted",
+  "rejected",
+  "answered",
+  "cancelled",
+  "expired",
+  "failed",
+] as const;
+export type IssueThreadInteractionStatus = (typeof ISSUE_THREAD_INTERACTION_STATUSES)[number];
+
+export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
+  "none",
+  "wake_assignee",
+  "wake_assignee_on_accept",
+] as const;
+export type IssueThreadInteractionContinuationPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
+
+export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
+
+export const ISSUE_ORIGIN_KINDS = [
+  "manual",
+  "routine_execution",
+  "stale_active_run_evaluation",
+  "harness_liveness_escalation",
+  "issue_productivity_review",
+  "stranded_issue_recovery",
+  "task_watchdog",
+  TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+] as const;
+export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
+export type PluginIssueOriginKind = `plugin:${string}`;
+export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
+export const ISSUE_WATCHDOG_DISCOVERY_KINDS = ["product_bug", "platform_bug"] as const;
+export type IssueWatchdogDiscoveryKind = (typeof ISSUE_WATCHDOG_DISCOVERY_KINDS)[number];
+export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
+export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
+
+export const ISSUE_RECOVERY_ACTION_KINDS = [
+  "missing_disposition",
+  "stranded_assigned_issue",
+  "workspace_validation",
+  "configuration_validation",
+  "active_run_watchdog",
+  "issue_graph_liveness",
+] as const;
+export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
+
+export const ISSUE_RECOVERY_ACTION_STATUSES = [
+  "active",
+  "escalated",
+  "resolved",
+  "cancelled",
+] as const;
+export type IssueRecoveryActionStatus = (typeof ISSUE_RECOVERY_ACTION_STATUSES)[number];
+
+export const ISSUE_RECOVERY_ACTION_OWNER_TYPES = [
+  "agent",
+  "user",
+  "board",
+  "system",
+] as const;
+export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_TYPES)[number];
+
+export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
+  "restored",
+  "handed_back",
+  "owner_completed",
+  "delegated",
+  "false_positive",
+  "blocked",
+  "escalated",
+  "cancelled",
+] as const;
+export type IssueRecoveryActionOutcome = (typeof ISSUE_RECOVERY_ACTION_OUTCOMES)[number];
+
+export function pluginOperationIssueOriginKind(pluginKey: string): PluginIssueOriginKind {
+  return `plugin:${pluginKey}:operation`;
+}
+
+export function isPluginOperationIssueOriginKind(originKind: string | null | undefined): boolean {
+  return typeof originKind === "string" && /^plugin:[^:]+:operation(?::|$)/.test(originKind);
+}
 
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
+
+export const ISSUE_TREE_CONTROL_MODES = ["pause", "resume", "cancel", "restore"] as const;
+export type IssueTreeControlMode = (typeof ISSUE_TREE_CONTROL_MODES)[number];
+
+export const ISSUE_TREE_HOLD_STATUSES = ["active", "released"] as const;
+export type IssueTreeHoldStatus = (typeof ISSUE_TREE_HOLD_STATUSES)[number];
+
+export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_active_runs_finish"] as const;
+export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
+
+export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
+export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
+export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
+export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+] as const;
+export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
+
+const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS);
+
+export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumentKey {
+  return SYSTEM_ISSUE_DOCUMENT_KEY_SET.has(key);
+}
+export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
+export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
+
+export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
+export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
+export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES = [
+  "exact",
+  "duplicate",
+  "fuzzy",
+  "ambiguous",
+  "missing",
+] as const;
+export type DocumentAnnotationAnchorConfidence =
+  (typeof DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES)[number];
+
+export const EXTERNAL_OBJECT_STATUS_CATEGORIES = [
+  "unknown",
+  "open",
+  "waiting",
+  "running",
+  "succeeded",
+  "failed",
+  "blocked",
+  "closed",
+  "archived",
+  "auth_required",
+  "unreachable",
+] as const;
+export type ExternalObjectStatusCategory = (typeof EXTERNAL_OBJECT_STATUS_CATEGORIES)[number];
+
+export const EXTERNAL_OBJECT_STATUS_TONES = [
+  "neutral",
+  "info",
+  "success",
+  "warning",
+  "danger",
+  "muted",
+] as const;
+export type ExternalObjectStatusTone = (typeof EXTERNAL_OBJECT_STATUS_TONES)[number];
+
+export const EXTERNAL_OBJECT_LIVENESS_STATES = [
+  "unknown",
+  "fresh",
+  "stale",
+  "auth_required",
+  "unreachable",
+] as const;
+export type ExternalObjectLivenessState = (typeof EXTERNAL_OBJECT_LIVENESS_STATES)[number];
+
+export const EXTERNAL_OBJECT_MENTION_SOURCE_KINDS = [
+  "title",
+  "description",
+  "comment",
+  "document",
+  "property",
+  "plugin",
+] as const;
+export type ExternalObjectMentionSourceKind = (typeof EXTERNAL_OBJECT_MENTION_SOURCE_KINDS)[number];
+
+export const EXTERNAL_OBJECT_MENTION_CONFIDENCES = ["exact", "likely", "possible"] as const;
+export type ExternalObjectMentionConfidence = (typeof EXTERNAL_OBJECT_MENTION_CONFIDENCES)[number];
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
@@ -147,8 +455,40 @@ export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[num
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
 
+export const ISSUE_MONITOR_SCHEDULED_BY = ["assignee", "board"] as const;
+export type IssueMonitorScheduledBy = (typeof ISSUE_MONITOR_SCHEDULED_BY)[number];
+
+export const ISSUE_EXECUTION_MONITOR_KINDS = ["external_service"] as const;
+export type IssueExecutionMonitorKind = (typeof ISSUE_EXECUTION_MONITOR_KINDS)[number];
+
+export const PROVIDER_QUOTA_MONITOR_SERVICE_NAME = "AI provider quota";
+
+export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
+  "wake_owner",
+  "create_recovery_issue",
+  "escalate_to_board",
+] as const;
+export type IssueExecutionMonitorRecoveryPolicy =
+  (typeof ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)[number];
+
 export const ISSUE_EXECUTION_STATE_STATUSES = ["idle", "pending", "changes_requested", "completed"] as const;
 export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[number];
+
+export const ISSUE_EXECUTION_MONITOR_STATE_STATUSES = ["scheduled", "triggered", "cleared"] as const;
+export type IssueExecutionMonitorStateStatus = (typeof ISSUE_EXECUTION_MONITOR_STATE_STATUSES)[number];
+
+export const ISSUE_EXECUTION_MONITOR_CLEAR_REASONS = [
+  "manual",
+  "triggered",
+  "done",
+  "cancelled",
+  "invalid_status",
+  "invalid_assignee",
+  "dispatch_skipped",
+  "timeout_exceeded",
+  "max_attempts_exhausted",
+] as const;
+export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_CLEAR_REASONS)[number];
 
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
@@ -168,6 +508,62 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
+export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
+
+export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
+export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained", "pending_cleanup"] as const;
+export type EnvironmentLeaseStatus = (typeof ENVIRONMENT_LEASE_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_POLICIES = [
+  "ephemeral",
+  "reuse_by_environment",
+  "reuse_by_execution_workspace",
+  "retain_on_failure",
+] as const;
+export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number];
+
+export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
+export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS = [
+  "snapshot",
+  "image",
+  "provider_template",
+  "unknown",
+] as const;
+export type EnvironmentCustomImageTemplateKind = (typeof ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_STATUSES = [
+  "active",
+  "superseded",
+  "revoked",
+  "failed",
+] as const;
+export type EnvironmentCustomImageTemplateStatus = (typeof ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_SETUP_SESSION_STATUSES = [
+  "starting",
+  "waiting_for_user",
+  "capturing",
+  "promoted",
+  "cancelled",
+  "timed_out",
+  "failed",
+] as const;
+export type EnvironmentCustomImageSetupSessionStatus =
+  (typeof ENVIRONMENT_CUSTOM_IMAGE_SETUP_SESSION_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_SETUP_CONNECTION_TYPES = [
+  "ssh",
+  "browser_terminal",
+  "unknown",
+] as const;
+export type EnvironmentCustomImageSetupConnectionType =
+  (typeof ENVIRONMENT_CUSTOM_IMAGE_SETUP_CONNECTION_TYPES)[number];
+
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
 
@@ -177,13 +573,19 @@ export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[num
 export const ROUTINE_CATCH_UP_POLICIES = ["skip_missed", "enqueue_missed_with_cap"] as const;
 export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
 
+export const ROUTINE_ACTIVITY_GATE_POLICIES = ["always", "require_external_activity"] as const;
+export type RoutineActivityGatePolicy = (typeof ROUTINE_ACTIVITY_GATE_POLICIES)[number];
+
+export const ROUTINE_ACTIVITY_GATE_SCOPES = ["company", "project"] as const;
+export type RoutineActivityGateScope = (typeof ROUTINE_ACTIVITY_GATE_SCOPES)[number];
+
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 
 export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256", "github_hmac", "none"] as const;
 export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
 
-export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select"] as const;
+export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select", "date"] as const;
 export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
 export const ROUTINE_RUN_STATUSES = [
@@ -199,7 +601,7 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
-export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -240,6 +642,115 @@ export const SECRET_PROVIDERS = [
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 
+export const SECRET_PROVIDER_CONFIG_STATUSES = [
+  "ready",
+  "warning",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigStatus = (typeof SECRET_PROVIDER_CONFIG_STATUSES)[number];
+
+export const SECRET_PROVIDER_CONFIG_HEALTH_STATUSES = [
+  "ready",
+  "warning",
+  "error",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigHealthStatus =
+  (typeof SECRET_PROVIDER_CONFIG_HEALTH_STATUSES)[number];
+
+export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
+export type SecretStatus = (typeof SECRET_STATUSES)[number];
+
+export const SECRET_SCOPES = ["company", "user"] as const;
+export type SecretScope = (typeof SECRET_SCOPES)[number];
+
+export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
+export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
+
+export const SECRET_VERSION_STATUSES = [
+  "current",
+  "previous",
+  "disabled",
+  "destroyed",
+  "failed",
+] as const;
+export type SecretVersionStatus = (typeof SECRET_VERSION_STATUSES)[number];
+
+export const SECRET_BINDING_TARGET_TYPES = [
+  "agent",
+  "project",
+  "environment",
+  "routine",
+  "plugin",
+  "issue",
+  "run",
+  "tool_connection",
+  "system",
+] as const;
+export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
+
+export const SECRET_ACCESS_OUTCOMES = [
+  "success",
+  "failure",
+  "missing",
+  "inactive",
+  "not_allowed",
+  "optional_omitted",
+  "provider_error",
+] as const;
+export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
+
+export const SECRET_PROJECTION_CLASSES = ["unclassified", "class_3_static_lease"] as const;
+export type SecretProjectionClass = (typeof SECRET_PROJECTION_CLASSES)[number];
+
+export const CLASS3_STATIC_LEASE_ALLOWLIST = [
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "agent",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "routine",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "agent",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "routine",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+] as const;
+export type Class3StaticLeaseAllowlistKey = (typeof CLASS3_STATIC_LEASE_ALLOWLIST)[number]["key"];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
@@ -252,6 +763,9 @@ export const BILLING_TYPES = [
   "unknown",
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
+
+export const COST_STATUSES = ["reported", "unpriced"] as const;
+export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [
   "inference_charge",
@@ -335,21 +849,36 @@ export type WakeupRequestStatus = (typeof WAKEUP_REQUEST_STATUSES)[number];
 
 export const HEARTBEAT_RUN_STATUSES = [
   "queued",
+  "scheduled_retry",
   "running",
   "succeeded",
+  "interrupted",
   "failed",
   "cancelled",
   "timed_out",
 ] as const;
 export type HeartbeatRunStatus = (typeof HEARTBEAT_RUN_STATUSES)[number];
 
+export const RUN_LIVENESS_STATES = [
+  "completed",
+  "advanced",
+  "plan_only",
+  "empty_response",
+  "blocked",
+  "failed",
+  "needs_followup",
+] as const;
+export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
+
 export const LIVE_EVENT_TYPES = [
   "heartbeat.run.queued",
   "heartbeat.run.status",
+  "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
   "agent.status",
   "activity.logged",
+  "external_object.updated",
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
@@ -359,7 +888,7 @@ export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 export const PRINCIPAL_TYPES = ["user", "agent"] as const;
 export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 
-export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended"] as const;
+export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended", "archived"] as const;
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
 
 export const COMPANY_MEMBERSHIP_ROLES = [
@@ -403,13 +932,257 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:configure",
+  "agents:suggest-changes",
+  "skills:create",
+  "skills:suggest-changes",
+  "environments:manage",
+  "tools:admin",
+  "tools:manage_connections",
+  "tools:manage_profiles",
+  "tools:view_audit",
+  "audit:view_agent_actions",
+  "tools:use",
+  "tools:manage_runtime",
+  "inbox:manage",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
   "tasks:assign_scope",
+  "tasks:manage_active_checkouts",
+  "pipelines:write",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
+export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
+
+export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolApplicationStatus = (typeof TOOL_APPLICATION_STATUSES)[number];
+
+export const TOOL_CONNECTION_KINDS = ["managed"] as const;
+export type ToolConnectionKind = (typeof TOOL_CONNECTION_KINDS)[number];
+
+export const TOOL_CONNECTION_HEALTH_STATUSES = [
+  "unknown",
+  "healthy",
+  "degraded",
+  "failed",
+  "unchecked",
+  "ok",
+  "error",
+  "missing_secret",
+] as const;
+export type ToolConnectionHealthStatus = (typeof TOOL_CONNECTION_HEALTH_STATUSES)[number];
+
+/**
+ * Health states that mean an app needs the user's attention (a bad/missing key
+ * or a degraded connection). Single source of truth shared by the needs-
+ * attention aggregation and the prosumer Apps surfaces so their counts agree.
+ */
+export const TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES: readonly ToolConnectionHealthStatus[] = [
+  "degraded",
+  "failed",
+  "error",
+  "missing_secret",
+];
+
+export function isToolConnectionAttentionHealth(status: ToolConnectionHealthStatus): boolean {
+  return TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES.includes(status);
+}
+
+export const TOOL_CATALOG_ENTRY_KINDS = ["tool", "resource", "prompt"] as const;
+export type ToolCatalogEntryKind = (typeof TOOL_CATALOG_ENTRY_KINDS)[number];
+
+export const TOOL_CATALOG_ENTRY_STATUSES = ["active", "disabled", "quarantined", "removed"] as const;
+export type ToolCatalogEntryStatus = (typeof TOOL_CATALOG_ENTRY_STATUSES)[number];
+
+export const TOOL_RISK_LEVELS = ["low", "medium", "high", "critical", "read", "write", "destructive"] as const;
+export type ToolRiskLevel = (typeof TOOL_RISK_LEVELS)[number];
+
+export const TOOL_PROFILE_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolProfileStatus = (typeof TOOL_PROFILE_STATUSES)[number];
+
+export const TOOL_PROFILE_DEFAULT_ACTIONS = ["deny", "allow"] as const;
+export type ToolProfileDefaultAction = (typeof TOOL_PROFILE_DEFAULT_ACTIONS)[number];
+
+export const TOOL_PROFILE_ENTRY_SELECTOR_TYPES = [
+  "application",
+  "connection",
+  "catalog_entry",
+  "tool_name",
+  "risk_level",
+] as const;
+export type ToolProfileEntrySelectorType = (typeof TOOL_PROFILE_ENTRY_SELECTOR_TYPES)[number];
+
+export const TOOL_PROFILE_ENTRY_EFFECTS = ["include", "exclude"] as const;
+export type ToolProfileEntryEffect = (typeof TOOL_PROFILE_ENTRY_EFFECTS)[number];
+
+export const TOOL_PROFILE_BINDING_TARGET_TYPES = ["company", "agent", "project", "routine", "issue", "gateway"] as const;
+export type ToolProfileBindingTargetType = (typeof TOOL_PROFILE_BINDING_TARGET_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolMcpGatewayStatus = (typeof TOOL_MCP_GATEWAY_STATUSES)[number];
+
+export const TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES = [
+  "gateway_only",
+  "inherit_context_then_gateway",
+  "gateway_then_context",
+] as const;
+export type ToolMcpGatewayDefaultProfileMode = (typeof TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES)[number];
+
+export const TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES = [
+  "none",
+  "company",
+  "project",
+  "routine",
+  "issue",
+  "agent",
+] as const;
+export type ToolMcpGatewayContextScopeType = (typeof TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES = ["gateway_client", "heartbeat_run", "board_user", "agent"] as const;
+export type ToolMcpGatewayTokenSubjectType = (typeof TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = ["tools/list", "tools/call"] as const;
+export type ToolMcpGatewayTokenAction = (typeof TOOL_MCP_GATEWAY_TOKEN_ACTIONS)[number];
+
+export const CONNECTION_TOKEN_ISSUANCE_PATHS = ["exchange", "oauth_access", "static"] as const;
+export type ConnectionTokenIssuancePath = (typeof CONNECTION_TOKEN_ISSUANCE_PATHS)[number];
+
+export const CONNECTION_TOKEN_ISSUANCE_OUTCOMES = [
+  "success",
+  "denied",
+  "rate_limited",
+  "use_env_lease",
+  "upstream_error",
+  "failure",
+] as const;
+export type ConnectionTokenIssuanceOutcome = (typeof CONNECTION_TOKEN_ISSUANCE_OUTCOMES)[number];
+
+export const TOOL_POLICY_TYPES = [
+  "allow",
+  "block",
+  "require_approval",
+  "trust_rule",
+  "rate_limit",
+] as const;
+export type ToolPolicyType = (typeof TOOL_POLICY_TYPES)[number];
+
+export const TOOL_POLICY_DECISIONS = ["allow", "deny", "require_approval", "rate_limited", "defer_runtime"] as const;
+export type ToolPolicyDecision = (typeof TOOL_POLICY_DECISIONS)[number];
+
+export const TOOL_INVOCATION_STATUSES = [
+  "pending",
+  "authorized",
+  "denied",
+  "awaiting_approval",
+  "executing",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "rate_limited",
+] as const;
+export type ToolInvocationStatus = (typeof TOOL_INVOCATION_STATUSES)[number];
+
+export const TOOL_INVOCATION_APPROVAL_STATES = [
+  "not_required",
+  "required",
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+] as const;
+export type ToolInvocationApprovalState = (typeof TOOL_INVOCATION_APPROVAL_STATES)[number];
+
+export const TOOL_ACTION_REQUEST_STATUSES = [
+  "pending",
+  "approved",
+  "executing",
+  "rejected",
+  "expired",
+  "cancelled",
+  "executed",
+  "failed",
+] as const;
+export type ToolActionRequestStatus = (typeof TOOL_ACTION_REQUEST_STATUSES)[number];
+
+export const TOOL_AUDIT_EVENT_TYPES = [
+  "discovery",
+  "policy_decision",
+  "invocation_created",
+  "call_started",
+  "call_completed",
+  "call_failed",
+  "call_denied",
+  "approval_requested",
+  "approval_resolved",
+  "session_revoked",
+  "trust_rule_created",
+  "trust_rule_revoked",
+  "trust_rule_used",
+  "runtime_started",
+  "runtime_stopped",
+  "rate_limited",
+] as const;
+export type ToolAuditEventType = (typeof TOOL_AUDIT_EVENT_TYPES)[number];
+
+export const TOOL_AUDIT_OUTCOMES = ["pending", "success", "failure", "denied", "timeout", "cancelled"] as const;
+export type ToolAuditOutcome = (typeof TOOL_AUDIT_OUTCOMES)[number];
+
+/**
+ * Connection-level lifecycle events surfaced on the per-app Activity tab
+ * alongside tool-call events (PAP-11284). These are derived from the
+ * company activity log rows scoped to a single tool connection.
+ */
+export const TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES = [
+  "app_connected",
+  "app_paused",
+  "app_resumed",
+  "allowlist_changed",
+  "reconnected",
+  "disconnected",
+  "actions_quarantined",
+] as const;
+export type ToolConnectionLifecycleEventType = (typeof TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES)[number];
+
+export const TOOL_RUNTIME_KINDS = ["remote_session", "local_stdio"] as const;
+export type ToolRuntimeKind = (typeof TOOL_RUNTIME_KINDS)[number];
+
+export const TOOL_RUNTIME_SLOT_STATUSES = ["starting", "running", "idle", "stopped", "failed", "disabled", "error"] as const;
+export type ToolRuntimeSlotStatus = (typeof TOOL_RUNTIME_SLOT_STATUSES)[number];
+
+export const TOOL_RATE_LIMIT_WINDOW_KINDS = ["minute", "hour", "day", "month"] as const;
+export type ToolRateLimitWindowKind = (typeof TOOL_RATE_LIMIT_WINDOW_KINDS)[number];
+
+export const TOOL_ACCESS_ACTIVITY_ACTIONS = [
+  "tool_application.created",
+  "tool_application.updated",
+  "tool_application.archived",
+  "tool_connection.created",
+  "tool_connection.updated",
+  "tool_connection.tested",
+  "tool_connection.catalog_refreshed",
+  "tool_profile.created",
+  "tool_profile.updated",
+  "tool_profile.duplicated",
+  "tool_profile.deleted",
+  "tool_profile.new_tools_reviewed",
+  "tool_profile.bound",
+  "tool_profile.unbound",
+  "tool_policy.created",
+  "tool_policy.updated",
+  "tool_policy.disabled",
+  "tool_trust_rule.created",
+  "tool_trust_rule.revoked",
+  "tool_runtime_slot.started",
+  "tool_runtime_slot.stopped",
+  "tool_action_request.created",
+  "tool_action_request.resolved",
+] as const;
+export type ToolAccessActivityAction = (typeof TOOL_ACCESS_ACTIVITY_ACTIONS)[number];
 
 // ---------------------------------------------------------------------------
 // Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification
@@ -474,8 +1247,19 @@ export const PLUGIN_CAPABILITIES = [
   "companies.read",
   "projects.read",
   "project.workspaces.read",
+  "execution.workspaces.read",
   "issues.read",
+  "issue.relations.read",
+  "issue.subtree.read",
   "issue.comments.read",
+  // Read pending issue-thread interactions (decision cards) on an issue.
+  "issue.interactions.read",
+  // Read issue attachment metadata and, via the capability-scoped host
+  // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
+  "issue.attachments.read",
+  // Read company approvals (list + get). The host redacts approval payloads to
+  // match the web app's own approval read surface.
+  "approvals.read",
   "issue.documents.read",
   "agents.read",
   "goals.read",
@@ -483,14 +1267,44 @@ export const PLUGIN_CAPABILITIES = [
   "goals.update",
   "activity.read",
   "costs.read",
+  "issues.orchestration.read",
+  "access.members.read",
+  "access.invites.read",
+  "authorization.grants.read",
+  "authorization.policies.read",
+  "authorization.audit.read",
+  "database.namespace.read",
   // Data Write
   "issues.create",
   "issues.update",
+  "issue.relations.write",
+  "issues.checkout",
+  "issues.wakeup",
   "issue.comments.create",
+  "issue.comments.create_human_attributed",
+  "issue.interactions.create",
+  // Respond to (accept/reject) an issue-thread interaction on behalf of a
+  // paired board user. Impersonation surface: the host independently
+  // re-verifies the actor is an active human member of the company at apply
+  // time (never trusts plugin-supplied identity), matching the web app's
+  // board-only interaction resolve route.
+  "issue.interactions.respond",
+  // Decide (approve/reject) a company approval on behalf of a paired board
+  // user. Same apply-time active-human-member re-verification as above; the
+  // web app's approval decision routes are board-only.
+  "approvals.respond",
   "issue.documents.write",
+  "projects.managed",
+  "routines.managed",
+  "skills.managed",
   "agents.pause",
   "agents.resume",
   "agents.invoke",
+  "agents.managed",
+  "access.members.write",
+  "access.invites.write",
+  "authorization.grants.write",
+  "authorization.policies.write",
   "agent.sessions.create",
   "agent.sessions.list",
   "agent.sessions.send",
@@ -498,6 +1312,12 @@ export const PLUGIN_CAPABILITIES = [
   "activity.log.write",
   "metrics.write",
   "telemetry.track",
+  "database.namespace.migrate",
+  "database.namespace.write",
+  "external.objects.detect",
+  "external.objects.read",
+  "external.objects.write",
+  "external.objects.refresh",
   // Plugin State
   "plugin.state.read",
   "plugin.state.write",
@@ -506,8 +1326,11 @@ export const PLUGIN_CAPABILITIES = [
   "events.emit",
   "jobs.schedule",
   "webhooks.receive",
+  "api.routes.register",
   "http.outbound",
   "secrets.read-ref",
+  "environment.drivers.register",
+  "local.folders",
   // Agent Tools
   "agent.tools.register",
   // UI
@@ -521,6 +1344,51 @@ export const PLUGIN_CAPABILITIES = [
 ] as const;
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
 
+export const PLUGIN_DATABASE_NAMESPACE_MODES = ["schema"] as const;
+export type PluginDatabaseNamespaceMode = (typeof PLUGIN_DATABASE_NAMESPACE_MODES)[number];
+
+export const PLUGIN_DATABASE_NAMESPACE_STATUSES = [
+  "active",
+  "migration_failed",
+] as const;
+export type PluginDatabaseNamespaceStatus = (typeof PLUGIN_DATABASE_NAMESPACE_STATUSES)[number];
+
+export const PLUGIN_DATABASE_MIGRATION_STATUSES = [
+  "applied",
+  "failed",
+] as const;
+export type PluginDatabaseMigrationStatus = (typeof PLUGIN_DATABASE_MIGRATION_STATUSES)[number];
+
+export const PLUGIN_DATABASE_CORE_READ_TABLES = [
+  "companies",
+  "projects",
+  "goals",
+  "agents",
+  "issues",
+  "issue_documents",
+  "issue_relations",
+  "issue_comments",
+  "heartbeat_runs",
+  "cost_events",
+  "approvals",
+  "issue_approvals",
+  "budget_incidents",
+] as const;
+export type PluginDatabaseCoreReadTable = (typeof PLUGIN_DATABASE_CORE_READ_TABLES)[number];
+
+export const PLUGIN_API_ROUTE_METHODS = ["GET", "POST", "PATCH", "DELETE"] as const;
+export type PluginApiRouteMethod = (typeof PLUGIN_API_ROUTE_METHODS)[number];
+
+export const PLUGIN_API_ROUTE_AUTH_MODES = ["board", "agent", "board-or-agent", "webhook"] as const;
+export type PluginApiRouteAuthMode = (typeof PLUGIN_API_ROUTE_AUTH_MODES)[number];
+
+export const PLUGIN_API_ROUTE_CHECKOUT_POLICIES = [
+  "none",
+  "required-for-agent-in-progress",
+  "always-for-agent",
+] as const;
+export type PluginApiRouteCheckoutPolicy = (typeof PLUGIN_API_ROUTE_CHECKOUT_POLICIES)[number];
+
 /**
  * UI extension slot types. Each slot type corresponds to a mount point in the
  * Paperclip UI where plugin components can be rendered.
@@ -533,6 +1401,7 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "taskDetailView",
   "dashboardWidget",
   "sidebar",
+  "routeSidebar",
   "sidebarPanel",
   "projectSidebarItem",
   "globalToolbarButton",
@@ -541,8 +1410,13 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "commentAnnotation",
   "commentContextMenuItem",
   "settingsPage",
+  "companySettingsPage",
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
+
+export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
+export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
+export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
 
 /**
  * Reserved company-scoped route segments that plugin page routes may not claim.
@@ -565,11 +1439,28 @@ export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
   "costs",
   "activity",
   "inbox",
+  "workspaces",
   "design-guide",
   "tests",
 ] as const;
 export type PluginReservedCompanyRouteSegment =
   (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number];
+
+/**
+ * Reserved route segments under `/:companyPrefix/company/settings/...` that
+ * plugin company settings pages may not claim.
+ */
+export const PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS = [
+  "general",
+  "environments",
+  "access",
+  "members",
+  "invites",
+  "secrets",
+  "instance",
+] as const;
+export type PluginReservedCompanySettingsRouteSegment =
+  (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number];
 
 /**
  * Launcher placement zones describe where a plugin-owned launcher can appear
@@ -646,6 +1537,8 @@ export const PLUGIN_UI_SLOT_ENTITY_TYPES = [
   "goal",
   "run",
   "comment",
+  "execution_workspace",
+  "project_workspace",
 ] as const;
 export type PluginUiSlotEntityType = (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
 
@@ -719,9 +1612,17 @@ export const PLUGIN_EVENT_TYPES = [
   "issue.created",
   "issue.updated",
   "issue.comment.created",
+  "issue.document.created",
+  "issue.document.updated",
+  "issue.document.deleted",
+  "issue.relations.updated",
+  "issue.checked_out",
+  "issue.released",
+  "issue.assignment_wakeup_requested",
   "agent.created",
   "agent.updated",
   "agent.status_changed",
+  "agent.error_cleared",
   "agent.run.started",
   "agent.run.finished",
   "agent.run.failed",
@@ -730,6 +1631,8 @@ export const PLUGIN_EVENT_TYPES = [
   "goal.updated",
   "approval.created",
   "approval.decided",
+  "budget.incident.opened",
+  "budget.incident.resolved",
   "cost_event.created",
   "activity.logged",
 ] as const;
@@ -743,359 +1646,9 @@ export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 export const PLUGIN_BRIDGE_ERROR_CODES = [
   "WORKER_UNAVAILABLE",
   "CAPABILITY_DENIED",
+  "INVOCATION_SCOPE_DENIED",
   "WORKER_ERROR",
   "TIMEOUT",
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
-
-/**
- * Estimated API pricing per model for shadow-cost calculations (PAP-19).
- * Base rates are USD per 1 million tokens; cache-read and cache-write rates
- * are derived from the input rate using Anthropic's published multipliers
- * when not set explicitly, so the table stays small and the multipliers
- * (0.1x read, 1.25x 5m write, 2.0x 1h write) are the single source of truth.
- *
- * Prices and modifier multipliers are sourced from Anthropic's pricing docs.
- * When updating this table, bump sourceFetchedAt and keep the note next to
- * the pricing constants below.
- */
-export interface ModelPricing {
-  /** Canonical model id used as the lookup key. */
-  modelId: string;
-  /** Alternate ids that should resolve to this entry (normalized before match). */
-  aliases?: string[];
-  /** USD per 1M input tokens. */
-  inputPer1M: number;
-  /** USD per 1M cache-read tokens. Defaults to inputPer1M * 0.1. */
-  cacheReadPer1M?: number;
-  /** USD per 1M 5-minute cache-write tokens. Defaults to inputPer1M * 1.25. */
-  cacheWrite5mPer1M?: number;
-  /** USD per 1M 1-hour cache-write tokens. Defaults to inputPer1M * 2.0. */
-  cacheWrite1hPer1M?: number;
-  /** USD per 1M output tokens. */
-  outputPer1M: number;
-  /** URL this row was sourced from. */
-  source: string;
-  /** ISO date the source was last fetched. */
-  sourceFetchedAt: string;
-}
-
-export const PRICING_SOURCE_URL =
-  "https://platform.claude.com/docs/en/docs/about-claude/pricing";
-export const PRICING_SOURCE_FETCHED_AT = "2026-04-18";
-
-/** Cache-read is 0.1x input (90% discount for prompt reuse). */
-export const CACHE_READ_MULTIPLIER = 0.1;
-/** 5-minute cache-write is 1.25x input. */
-export const CACHE_WRITE_5M_MULTIPLIER = 1.25;
-/** 1-hour cache-write is 2.0x input. */
-export const CACHE_WRITE_1H_MULTIPLIER = 2.0;
-
-/**
- * Request-level pricing modifiers that stack on top of the base rate.
- * These come from Anthropic docs; OpenAI/Gemini entries ignore them.
- *
- *   Fast mode (Opus 4.6 beta):     6.0x all token categories
- *   Data residency (us-only):      1.1x all token categories (Opus 4.6/4.7+)
- *   Batch API:                     0.5x input + output (cache unchanged)
- */
-export const FAST_MODE_MULTIPLIER = 6.0;
-export const US_DATA_RESIDENCY_MULTIPLIER = 1.1;
-export const BATCH_API_MULTIPLIER = 0.5;
-
-/** Request-level flags captured per cost event (nullable until adapters surface them). */
-export interface PricingModifiers {
-  fastMode?: boolean;
-  dataResidency?: "global" | "us-only";
-  batch?: boolean;
-}
-
-/**
- * MODEL_API_PRICING
- *
- * Source: https://platform.claude.com/docs/en/docs/about-claude/pricing
- * Fetched: 2026-04-18
- *
- * Anthropic docs (2026-04-18) confirm:
- *   "Opus 4.7, Opus 4.6, and Sonnet 4.6 include the full 1M token context
- *   window at standard pricing." No 1M-tier multiplier for current models.
- *
- * Older Opus 4 / 4.1 priced at $15 in / $75 out (long-context pricing). Kept
- * for historical cost_events that still reference those model ids.
- */
-const ANTHROPIC_SRC = PRICING_SOURCE_URL;
-const OPENAI_SRC = "https://openai.com/api/pricing/";
-const GEMINI_SRC = "https://ai.google.dev/gemini-api/docs/pricing";
-
-export const MODEL_API_PRICING: Record<string, ModelPricing> = {
-  // --- Anthropic (current) ---
-  "claude-opus-4-7": {
-    modelId: "claude-opus-4-7",
-    aliases: ["claude-opus-4-7[1m]"],
-    inputPer1M: 5,
-    outputPer1M: 25,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-opus-4-6": {
-    modelId: "claude-opus-4-6",
-    aliases: ["claude-opus-4-6[1m]"],
-    inputPer1M: 5,
-    outputPer1M: 25,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-sonnet-4-6": {
-    modelId: "claude-sonnet-4-6",
-    aliases: ["claude-sonnet-4-6[1m]"],
-    inputPer1M: 3,
-    outputPer1M: 15,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-sonnet-4-5": {
-    modelId: "claude-sonnet-4-5",
-    inputPer1M: 3,
-    outputPer1M: 15,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-opus-4-5": {
-    modelId: "claude-opus-4-5",
-    inputPer1M: 5,
-    outputPer1M: 25,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-haiku-4-5": {
-    modelId: "claude-haiku-4-5",
-    aliases: ["claude-haiku-4-5-20251001"],
-    inputPer1M: 1,
-    outputPer1M: 5,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  // --- Anthropic (historical, retained for legacy cost_events) ---
-  "claude-opus-4-1": {
-    modelId: "claude-opus-4-1",
-    inputPer1M: 15,
-    outputPer1M: 75,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-opus-4": {
-    modelId: "claude-opus-4",
-    inputPer1M: 15,
-    outputPer1M: 75,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-3-5-sonnet-20241022": {
-    modelId: "claude-3-5-sonnet-20241022",
-    inputPer1M: 3,
-    outputPer1M: 15,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-3-5-haiku-20241022": {
-    modelId: "claude-3-5-haiku-20241022",
-    inputPer1M: 0.8,
-    outputPer1M: 4,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-3-opus-20240229": {
-    modelId: "claude-3-opus-20240229",
-    inputPer1M: 15,
-    outputPer1M: 75,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "claude-3-haiku-20240307": {
-    modelId: "claude-3-haiku-20240307",
-    inputPer1M: 0.25,
-    outputPer1M: 1.25,
-    source: ANTHROPIC_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  // --- OpenAI ---
-  "gpt-4o": {
-    modelId: "gpt-4o",
-    inputPer1M: 2.5,
-    cacheReadPer1M: 1.25,
-    outputPer1M: 10,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "gpt-4o-mini": {
-    modelId: "gpt-4o-mini",
-    inputPer1M: 0.15,
-    cacheReadPer1M: 0.075,
-    outputPer1M: 0.6,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "gpt-4.1": {
-    modelId: "gpt-4.1",
-    inputPer1M: 2,
-    cacheReadPer1M: 0.5,
-    outputPer1M: 8,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "gpt-4.1-mini": {
-    modelId: "gpt-4.1-mini",
-    inputPer1M: 0.4,
-    cacheReadPer1M: 0.1,
-    outputPer1M: 1.6,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "gpt-4.1-nano": {
-    modelId: "gpt-4.1-nano",
-    inputPer1M: 0.1,
-    cacheReadPer1M: 0.025,
-    outputPer1M: 0.4,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "o3": {
-    modelId: "o3",
-    inputPer1M: 2,
-    cacheReadPer1M: 0.5,
-    outputPer1M: 8,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "o3-mini": {
-    modelId: "o3-mini",
-    inputPer1M: 1.1,
-    cacheReadPer1M: 0.55,
-    outputPer1M: 4.4,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "o4-mini": {
-    modelId: "o4-mini",
-    inputPer1M: 1.1,
-    cacheReadPer1M: 0.275,
-    outputPer1M: 4.4,
-    source: OPENAI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  // --- Google Gemini ---
-  "gemini-2.5-pro": {
-    modelId: "gemini-2.5-pro",
-    inputPer1M: 1.25,
-    cacheReadPer1M: 0.3125,
-    outputPer1M: 10,
-    source: GEMINI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "gemini-2.5-flash": {
-    modelId: "gemini-2.5-flash",
-    inputPer1M: 0.15,
-    cacheReadPer1M: 0.0375,
-    outputPer1M: 0.6,
-    source: GEMINI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-  "gemini-2.0-flash": {
-    modelId: "gemini-2.0-flash",
-    inputPer1M: 0.1,
-    cacheReadPer1M: 0.025,
-    outputPer1M: 0.4,
-    source: GEMINI_SRC,
-    sourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-  },
-};
-
-/** Alias → canonical modelId, built once at module load. */
-const MODEL_ALIAS_INDEX: Record<string, string> = (() => {
-  const idx: Record<string, string> = {};
-  for (const [canonical, entry] of Object.entries(MODEL_API_PRICING)) {
-    idx[canonical] = canonical;
-    for (const alias of entry.aliases ?? []) {
-      idx[alias] = canonical;
-    }
-  }
-  return idx;
-})();
-
-/**
- * Resolve a raw model string to a canonical pricing entry, or null if unknown.
- * Matches exact id, alias, and then the id with a `[...]` suffix stripped
- * (so `claude-opus-4-6[1m]` still resolves when `[1m]` isn't an alias yet).
- */
-export function resolveModelPricing(model: string): ModelPricing | null {
-  if (!model) return null;
-  const direct = MODEL_ALIAS_INDEX[model];
-  if (direct) return MODEL_API_PRICING[direct] ?? null;
-  const stripped = model.replace(/\[[^\]]*\]$/, "");
-  if (stripped !== model) {
-    const viaStripped = MODEL_ALIAS_INDEX[stripped];
-    if (viaStripped) return MODEL_API_PRICING[viaStripped] ?? null;
-  }
-  return null;
-}
-
-function effectiveCacheReadRate(p: ModelPricing): number {
-  return p.cacheReadPer1M ?? p.inputPer1M * CACHE_READ_MULTIPLIER;
-}
-
-function isOpus46Family(p: ModelPricing): boolean {
-  return p.modelId === "claude-opus-4-6";
-}
-
-function isOpus46Or47Family(p: ModelPricing): boolean {
-  return p.modelId === "claude-opus-4-6" || p.modelId === "claude-opus-4-7";
-}
-
-/**
- * Estimate API cost in cents for the given model and token counts.
- *
- * Returns `null` when the model is not in the pricing table. Callers MUST
- * surface null as "pricing unknown" (badge, `—`) rather than silently defaulting
- * to mid-tier rates — silent fallback caused the undercount fixed in PAP-19.
- *
- * Modifier precedence (multiplicative, in order):
- *   base → batch (input+output only) → data residency → fast mode
- */
-export function estimateApiCostCents(
-  model: string,
-  inputTokens: number,
-  cachedInputTokens: number,
-  outputTokens: number,
-  modifiers: PricingModifiers = {},
-): number | null {
-  const pricing = resolveModelPricing(model);
-  if (!pricing) return null;
-
-  const inputRate = pricing.inputPer1M;
-  const outputRate = pricing.outputPer1M;
-  const cacheReadRate = effectiveCacheReadRate(pricing);
-
-  // Apply Batch API (0.5x input + output; cache unchanged per Anthropic docs).
-  const batch = modifiers.batch === true;
-  const batchMult = batch ? BATCH_API_MULTIPLIER : 1;
-
-  // Data residency applies to Opus 4.6/4.7+ only per Anthropic docs.
-  const residencyEligible = isOpus46Or47Family(pricing);
-  const residencyMult =
-    residencyEligible && modifiers.dataResidency === "us-only"
-      ? US_DATA_RESIDENCY_MULTIPLIER
-      : 1;
-
-  // Fast mode is Opus 4.6 only today; stacks across all token categories.
-  const fastEligible = isOpus46Family(pricing);
-  const fastMult = fastEligible && modifiers.fastMode === true ? FAST_MODE_MULTIPLIER : 1;
-
-  const inputUsd = (inputTokens * inputRate * batchMult * residencyMult * fastMult) / 1_000_000;
-  const outputUsd =
-    (outputTokens * outputRate * batchMult * residencyMult * fastMult) / 1_000_000;
-  const cacheReadUsd =
-    (cachedInputTokens * cacheReadRate * residencyMult * fastMult) / 1_000_000;
-
-  return Math.round((inputUsd + outputUsd + cacheReadUsd) * 100);
-}

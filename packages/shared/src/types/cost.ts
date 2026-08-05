@@ -1,4 +1,4 @@
-import type { BillingType } from "../constants.js";
+import type { BillingType, CostStatus } from "../constants.js";
 
 export interface CostEvent {
   id: string;
@@ -12,6 +12,7 @@ export interface CostEvent {
   provider: string;
   biller: string;
   billingType: BillingType;
+  costStatus: CostStatus;
   model: string;
   inputTokens: number;
   cachedInputTokens: number;
@@ -24,22 +25,23 @@ export interface CostEvent {
 export interface CostSummary {
   companyId: string;
   spendCents: number;
-  estimatedCostCents: number;
   budgetCents: number;
   utilizationPercent: number;
+}
+
+export interface IssueCostSummary {
+  issueId: string;
+  issueCount: number;
+  includeDescendants: boolean;
+  costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
-  /**
-   * Model ids seen in this range that are not in MODEL_API_PRICING. Their
-   * token usage is counted but their dollars are not — UI should surface these
-   * so users know some of the "estimated" total is missing.
-   */
-  unknownModelIds: string[];
-  /** ISO date of the pricing source fetch (for UI provenance). */
-  pricingSourceFetchedAt: string;
-  /** Pricing source URL (for UI provenance). */
-  pricingSourceUrl: string;
+  /** number of distinct heartbeat runs aggregated across the issue tree */
+  runCount: number;
+  /** sum of wall-clock duration of each run in the tree (ms);
+   * still-running runs contribute (now - startedAt) so this ticks up live */
+  runtimeMs: number;
 }
 
 export interface CostByAgent {
@@ -47,7 +49,6 @@ export interface CostByAgent {
   agentName: string | null;
   agentStatus: string | null;
   costCents: number;
-  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -64,7 +65,6 @@ export interface CostByProviderModel {
   billingType: BillingType;
   model: string;
   costCents: number;
-  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -78,7 +78,6 @@ export interface CostByProviderModel {
 export interface CostByBiller {
   biller: string;
   costCents: number;
-  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -100,7 +99,6 @@ export interface CostByAgentModel {
   billingType: BillingType;
   model: string;
   costCents: number;
-  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -125,7 +123,6 @@ export interface CostByProject {
   projectId: string | null;
   projectName: string | null;
   costCents: number;
-  estimatedCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

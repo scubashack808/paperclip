@@ -1,3 +1,5 @@
+import type { TrustAuthorizationPolicy } from "../trust-policy.js";
+
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
   | "git_worktree"
@@ -17,6 +19,8 @@ export type ExecutionWorkspaceMode =
   | "operator_branch"
   | "reuse_existing"
   | "agent_default";
+
+export type SharedWorkspaceConcurrency = "auto" | "serialize" | "allow";
 
 export type ExecutionWorkspaceProviderType =
   | "local_fs"
@@ -45,7 +49,7 @@ export type ExecutionWorkspaceCloseActionKind =
   | "git_branch_delete"
   | "remove_local_directory";
 
-export type WorkspaceRuntimeDesiredState = "running" | "stopped";
+export type WorkspaceRuntimeDesiredState = "running" | "stopped" | "manual";
 export type WorkspaceRuntimeServiceStateMap = Record<string, WorkspaceRuntimeDesiredState>;
 export type WorkspaceCommandKind = "service" | "job";
 
@@ -74,11 +78,14 @@ export interface ExecutionWorkspaceStrategy {
   branchTemplate?: string | null;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
+  runtimeProvisionCommand?: string | null;
   teardownCommand?: string | null;
 }
 
 export interface ExecutionWorkspaceConfig {
+  environmentId?: string | null;
   provisionCommand: string | null;
+  runtimeProvisionCommand?: string | null;
   teardownCommand: string | null;
   cleanupCommand: string | null;
   workspaceRuntime: Record<string, unknown> | null;
@@ -144,28 +151,95 @@ export interface ExecutionWorkspaceCloseReadiness {
 
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
+  sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
   allowIssueOverride?: boolean;
   defaultProjectWorkspaceId?: string | null;
+  environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
   branchPolicy?: Record<string, unknown> | null;
   pullRequestPolicy?: Record<string, unknown> | null;
   runtimePolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
+  authorizationPolicy?: TrustAuthorizationPolicy | null;
 }
 
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
+  sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
+  environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
+  networkEgress?: {
+    allowFqdns?: string[];
+    allowCidrs?: string[];
+  } | null;
 }
 
 export interface ExecutionWorkspaceSummary {
   id: string;
   name: string;
   mode: Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing" | "agent_default"> | "adapter_managed" | "cloud_sandbox";
+  status: ExecutionWorkspaceStatus;
+  cwd: string | null;
+  branchName: string | null;
   projectWorkspaceId: string | null;
+  lastUsedAt: Date;
+}
+
+export interface WorkspaceOverviewLinkedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  updatedAt: Date;
+}
+
+export interface WorkspaceOverviewPrimaryService {
+  id: string;
+  serviceName: string;
+  status: WorkspaceRuntimeService["status"];
+  url: string | null;
+  port: number | null;
+  healthStatus: WorkspaceRuntimeService["healthStatus"];
+  updatedAt: Date;
+}
+
+export interface WorkspaceOverviewItem {
+  key: string;
+  kind: "execution_workspace";
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectUrlKey: string;
+  projectName: string;
+  mode: ExecutionWorkspaceSummary["mode"];
+  strategyType: ExecutionWorkspaceStrategyType;
+  cwd: string | null;
+  branchName: string | null;
+  lastUpdatedAt: Date;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string;
+  executionWorkspaceStatus: ExecutionWorkspaceStatus;
+  serviceCount: number;
+  runningServiceCount: number;
+  primaryServiceUrl: string | null;
+  primaryServiceUrlRunning: boolean;
+  primaryService: WorkspaceOverviewPrimaryService | null;
+  hasRuntimeConfig: boolean;
+  linkedIssueCount: number;
+  linkedIssues: WorkspaceOverviewLinkedIssue[];
+}
+
+export interface WorkspaceOverviewResponse {
+  items: WorkspaceOverviewItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  nextOffset: number | null;
 }
 
 export interface ExecutionWorkspace {
@@ -207,7 +281,7 @@ export interface WorkspaceRuntimeService {
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
   serviceName: string;
-  status: "starting" | "running" | "stopped" | "failed";
+  status: "provisioning" | "starting" | "running" | "stopped" | "failed";
   lifecycle: "shared" | "ephemeral";
   reuseKey: string | null;
   command: string | null;
@@ -226,4 +300,124 @@ export interface WorkspaceRuntimeService {
   configIndex?: number | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type WorkspaceRealizationTransport = "local" | "ssh" | "sandbox" | "plugin";
+export type WorkspaceRealizationMode = "copy" | "in_place";
+
+export interface WorkspaceRealizationPathAlias {
+  path: string;
+  target: string;
+}
+
+export type WorkspaceRealizationSyncStrategy =
+  | "none"
+  | "ssh_git_import_export"
+  | "sandbox_archive_upload_download"
+  | "provider_defined";
+
+export interface WorkspaceRealizationRequest {
+  version: 1;
+  adapterType: string;
+  companyId: string;
+  environmentId: string;
+  executionWorkspaceId: string | null;
+  issueId: string | null;
+  heartbeatRunId: string;
+  requestedMode: string | null;
+  source: {
+    kind: "project_primary" | "task_session" | "agent_home";
+    localPath: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+    strategy: "project_primary" | "git_worktree";
+    branchName: string | null;
+    worktreePath: string | null;
+  };
+  /**
+   * Read-only referenced (mentioned) project sources for this run, one per authorized additional
+   * project. Additive and backward-compatible: it defaults to an empty array for legacy payloads
+   * and for the anchor-only path. Additional sources are plain trees; they never get git-worktree
+   * realization (that stays the anchor-only path).
+   */
+  additionalSources?: Array<{
+    localPath: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
+  runtimeOverlay: {
+    provisionCommand: string | null;
+    runtimeProvisionCommand: string | null;
+    teardownCommand: string | null;
+    cleanupCommand: string | null;
+    workspaceRuntime: Record<string, unknown> | null;
+  };
+}
+
+export interface WorkspaceRealizationRecord {
+  version: 1;
+  mode: WorkspaceRealizationMode;
+  authoritativeRoot: string;
+  pathAliases: WorkspaceRealizationPathAlias[];
+  outboundRestorePaths: string[];
+  transport: WorkspaceRealizationTransport;
+  provider: string | null;
+  environmentId: string;
+  leaseId: string;
+  providerLeaseId: string | null;
+  local: {
+    path: string;
+    source: WorkspaceRealizationRequest["source"]["kind"];
+    strategy: WorkspaceRealizationRequest["source"]["strategy"];
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+    branchName: string | null;
+    worktreePath: string | null;
+  };
+  /**
+   * Realized read-only referenced (mentioned) project workspaces for this run, one per authorized
+   * additional source in the request. This field carries each resolved path to the execution
+   * target so the target can expose the referenced trees to the agent. It is additive and
+   * backward-compatible: it defaults to an empty array for legacy records and for the anchor-only
+   * path.
+   */
+  additional?: Array<{
+    path: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
+  remote: {
+    path: string | null;
+    host?: string | null;
+    port?: number | null;
+    username?: string | null;
+    sandboxId?: string | null;
+  };
+  sync: {
+    strategy: WorkspaceRealizationSyncStrategy;
+    prepare: string;
+    syncBack: string | null;
+  };
+  bootstrap: {
+    command: string | null;
+  };
+  rebuild: {
+    executionWorkspaceId: string | null;
+    mode: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+    localPath: string;
+    remotePath: string | null;
+    providerLeaseId: string | null;
+    metadata: Record<string, unknown>;
+  };
+  summary: string;
 }

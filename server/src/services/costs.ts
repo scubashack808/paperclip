@@ -1,13 +1,10 @@
-import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
-import {
-  estimateApiCostCents,
-  PRICING_SOURCE_FETCHED_AT,
-  PRICING_SOURCE_URL,
-} from "@paperclipai/shared";
+import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -118,67 +115,165 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [row] = await db
+      const [{ total }] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
-          inputTokens: sumAsNumber(costEvents.inputTokens),
-          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
-          outputTokens: sumAsNumber(costEvents.outputTokens),
         })
         .from(costEvents)
         .where(and(...conditions));
 
-      const spendCents = Number(row.total);
-      const inputTokens = Number(row.inputTokens);
-      const cachedInputTokens = Number(row.cachedInputTokens);
-      const outputTokens = Number(row.outputTokens);
+      const spendCents = Number(total);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (spendCents / company.budgetMonthlyCents) * 100
           : 0;
 
-      // Compute per-model estimated cost for accurate shadow pricing
-      const modelRows = spendCents === 0 && (inputTokens + cachedInputTokens + outputTokens) > 0
-        ? await db
-            .select({
-              model: costEvents.model,
-              inputTokens: sumAsNumber(costEvents.inputTokens),
-              cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
-              outputTokens: sumAsNumber(costEvents.outputTokens),
-            })
-            .from(costEvents)
-            .where(and(...conditions))
-            .groupBy(costEvents.model)
-        : [];
-
-      let estimatedCost = 0;
-      const unknownModels = new Set<string>();
-      for (const m of modelRows) {
-        const est = estimateApiCostCents(
-          m.model,
-          Number(m.inputTokens),
-          Number(m.cachedInputTokens),
-          Number(m.outputTokens),
-        );
-        if (est === null) {
-          if (m.model) unknownModels.add(m.model);
-        } else {
-          estimatedCost += est;
-        }
-      }
-
       return {
         companyId,
         spendCents,
-        estimatedCostCents: spendCents > 0 ? spendCents : estimatedCost,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
-        inputTokens,
-        cachedInputTokens,
-        outputTokens,
-        unknownModelIds: Array.from(unknownModels).sort(),
-        pricingSourceFetchedAt: PRICING_SOURCE_FETCHED_AT,
-        pricingSourceUrl: PRICING_SOURCE_URL,
+      };
+    },
+
+    issueTreeSummary: async (
+      companyId: string,
+      issueId: string,
+      options: { excludeRoot?: boolean } = {},
+    ) => {
+      // Callers must resolve and authorize a visible root issue before invoking this.
+      // The route does that so zero counts are not mistaken for a missing root.
+      const childIssues = alias(issues, "child");
+
+      // The seed of the recursive CTE: when excludeRoot is true, start from
+      // the direct children so the root issue itself is not counted.
+      const cteSeed = options.excludeRoot
+        ? sql`
+            SELECT ${issues.id}
+            FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.parentId} = ${issueId}
+              AND ${issues.hiddenAt} IS NULL
+              AND ${issues.harnessKind} IS NULL
+          `
+        : sql`
+            SELECT ${issues.id}
+            FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.id} = ${issueId}
+              AND ${issues.hiddenAt} IS NULL
+              AND ${issues.harnessKind} IS NULL
+          `;
+
+      const cteSeedText = options.excludeRoot
+        ? sql`
+            SELECT (${issues.id})::text AS id
+            FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.parentId} = ${issueId}
+              AND ${issues.hiddenAt} IS NULL
+              AND ${issues.harnessKind} IS NULL
+          `
+        : sql`
+            SELECT (${issues.id})::text AS id
+            FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.id} = ${issueId}
+              AND ${issues.hiddenAt} IS NULL
+              AND ${issues.harnessKind} IS NULL
+          `;
+
+      const issueTreeCondition = sql<boolean>`
+        ${issues.id} IN (
+          WITH RECURSIVE issue_tree(id) AS (
+            ${cteSeed}
+            UNION ALL
+            SELECT ${childIssues.id}
+            FROM ${issues} ${childIssues}
+            JOIN issue_tree ON ${childIssues.parentId} = issue_tree.id
+            WHERE ${childIssues.companyId} = ${companyId}
+              AND ${childIssues.hiddenAt} IS NULL
+              AND ${childIssues.harnessKind} IS NULL
+          )
+          SELECT id FROM issue_tree
+        )
+      `;
+
+      const runSummarySql = sql`
+        WITH RECURSIVE issue_tree(id) AS (
+          ${cteSeedText}
+          UNION ALL
+          SELECT (${childIssues.id})::text
+          FROM ${issues} ${childIssues}
+          JOIN issue_tree ON (${childIssues.parentId})::text = issue_tree.id
+          WHERE ${childIssues.companyId} = ${companyId}
+            AND ${childIssues.hiddenAt} IS NULL
+            AND ${childIssues.harnessKind} IS NULL
+        )
+        SELECT
+          count(distinct ${heartbeatRuns.id})::int AS "runCount",
+          coalesce(sum(extract(epoch from (coalesce(${heartbeatRuns.finishedAt}, now()) - ${heartbeatRuns.startedAt})) * 1000), 0)::double precision AS "runtimeMs"
+        FROM ${heartbeatRuns}
+        WHERE ${heartbeatRuns.companyId} = ${companyId}
+          AND ${heartbeatRuns.startedAt} IS NOT NULL
+          AND (
+            ${heartbeatRuns.contextSnapshot} ->> 'issueId' IN (SELECT id FROM issue_tree)
+            OR EXISTS (
+              SELECT 1
+              FROM ${activityLog}
+              JOIN issue_tree ON ${activityLog.entityId} = issue_tree.id
+              WHERE ${activityLog.companyId} = ${companyId}
+                AND ${activityLog.entityType} = 'issue'
+                AND ${activityLog.runId} = ${heartbeatRuns.id}
+            )
+          )
+      `;
+
+      // Run cost-event aggregation and run-duration aggregation in parallel.
+      // They're separate queries because cost_events fan out per-event and
+      // joining heartbeat_runs through them would double-count run durations.
+      const [costRowResult, runRowResult] = await Promise.all([
+        db
+          .select({
+            issueCount: sql<number>`count(distinct ${issues.id})::int`,
+            costCents: sumAsNumber(costEvents.costCents),
+            inputTokens: sumAsNumber(costEvents.inputTokens),
+            cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+            outputTokens: sumAsNumber(costEvents.outputTokens),
+          })
+          .from(issues)
+          .leftJoin(
+            costEvents,
+            and(
+              eq(costEvents.companyId, companyId),
+              eq(costEvents.issueId, issues.id),
+            ),
+          )
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              visibleIssueCondition(),
+              issueTreeCondition,
+            ),
+          ),
+        db.execute(runSummarySql),
+      ]);
+
+      const costRow = costRowResult[0];
+      const runRow = Array.isArray(runRowResult)
+        ? (runRowResult[0] as { runCount?: number | string | null; runtimeMs?: number | string | null } | undefined)
+        : undefined;
+
+      return {
+        issueId,
+        issueCount: Number(costRow?.issueCount ?? 0),
+        includeDescendants: true,
+        costCents: Number(costRow?.costCents ?? 0),
+        inputTokens: Number(costRow?.inputTokens ?? 0),
+        cachedInputTokens: Number(costRow?.cachedInputTokens ?? 0),
+        outputTokens: Number(costRow?.outputTokens ?? 0),
+        runCount: Number(runRow?.runCount ?? 0),
+        runtimeMs: Number(runRow?.runtimeMs ?? 0),
       };
     },
 
@@ -187,28 +282,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      // Fetch per-agent-model token breakdown for accurate estimated cost
-      const agentModelRows = await db
-        .select({
-          agentId: costEvents.agentId,
-          model: costEvents.model,
-          costCents: sumAsNumber(costEvents.costCents),
-          inputTokens: sumAsNumber(costEvents.inputTokens),
-          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
-          outputTokens: sumAsNumber(costEvents.outputTokens),
-        })
-        .from(costEvents)
-        .where(and(...conditions))
-        .groupBy(costEvents.agentId, costEvents.model);
-
-      const estimatedByAgent = new Map<string, number>();
-      for (const row of agentModelRows) {
-        const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
-        if (est === null) continue;
-        estimatedByAgent.set(row.agentId, (estimatedByAgent.get(row.agentId) ?? 0) + est);
-      }
-
-      const rows = await db
+      return db
         .select({
           agentId: costEvents.agentId,
           agentName: agents.name,
@@ -233,11 +307,6 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.status)
         .orderBy(desc(sumAsNumber(costEvents.costCents)));
-
-      return rows.map((row) => ({
-        ...row,
-        estimatedCostCents: row.costCents > 0 ? row.costCents : (estimatedByAgent.get(row.agentId) ?? 0),
-      }));
     },
 
     byProvider: async (companyId: string, range?: CostDateRange) => {
@@ -245,7 +314,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const rows = await db
+      return db
         .select({
           provider: costEvents.provider,
           biller: costEvents.biller,
@@ -270,19 +339,6 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model)
         .orderBy(desc(sumAsNumber(costEvents.costCents)));
-
-      return rows.map((row) => ({
-        ...row,
-        estimatedCostCents:
-          row.costCents > 0
-            ? row.costCents
-            : (estimateApiCostCents(
-                row.model,
-                Number(row.inputTokens),
-                Number(row.cachedInputTokens),
-                Number(row.outputTokens),
-              ) ?? 0),
-      }));
     },
 
     byBiller: async (companyId: string, range?: CostDateRange) => {
@@ -290,27 +346,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      // Per-biller-model breakdown for estimated cost
-      const billerModelRows = await db
-        .select({
-          biller: costEvents.biller,
-          model: costEvents.model,
-          inputTokens: sumAsNumber(costEvents.inputTokens),
-          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
-          outputTokens: sumAsNumber(costEvents.outputTokens),
-        })
-        .from(costEvents)
-        .where(and(...conditions))
-        .groupBy(costEvents.biller, costEvents.model);
-
-      const estimatedByBiller = new Map<string, number>();
-      for (const row of billerModelRows) {
-        const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
-        if (est === null) continue;
-        estimatedByBiller.set(row.biller, (estimatedByBiller.get(row.biller) ?? 0) + est);
-      }
-
-      const rows = await db
+      return db
         .select({
           biller: costEvents.biller,
           costCents: sumAsNumber(costEvents.costCents),
@@ -334,11 +370,6 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.biller)
         .orderBy(desc(sumAsNumber(costEvents.costCents)));
-
-      return rows.map((row) => ({
-        ...row,
-        estimatedCostCents: row.costCents > 0 ? row.costCents : (estimatedByBiller.get(row.biller) ?? 0),
-      }));
     },
 
     /**
@@ -400,7 +431,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       // the (companyId, agentId, occurredAt) composite index covers this well.
       // order by provider + model for stable db-level ordering; cost-desc sort
       // within each agent's sub-rows is done client-side in the ui memo.
-      const rows = await db
+      return db
         .select({
           agentId: costEvents.agentId,
           agentName: agents.name,
@@ -425,19 +456,6 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           costEvents.model,
         )
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
-
-      return rows.map((row) => ({
-        ...row,
-        estimatedCostCents:
-          row.costCents > 0
-            ? row.costCents
-            : (estimateApiCostCents(
-                row.model,
-                Number(row.inputTokens),
-                Number(row.cachedInputTokens),
-                Number(row.outputTokens),
-              ) ?? 0),
-      }));
     },
 
     byProject: async (companyId: string, range?: CostDateRange) => {
@@ -473,31 +491,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       const costCentsExpr = sumAsNumber(costEvents.costCents);
 
-      // Get per-project-model breakdown for accurate estimated cost
-      const projectModelRows = await db
-        .select({
-          projectId: effectiveProjectId,
-          model: costEvents.model,
-          costCents: sumAsNumber(costEvents.costCents),
-          inputTokens: sumAsNumber(costEvents.inputTokens),
-          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
-          outputTokens: sumAsNumber(costEvents.outputTokens),
-        })
-        .from(costEvents)
-        .leftJoin(runProjectLinks, eq(costEvents.heartbeatRunId, runProjectLinks.runId))
-        .innerJoin(projects, sql`${projects.id} = ${effectiveProjectId}`)
-        .where(and(...conditions, sql`${effectiveProjectId} is not null`))
-        .groupBy(effectiveProjectId, costEvents.model);
-
-      const estimatedByProject = new Map<string, number>();
-      for (const row of projectModelRows) {
-        const key = row.projectId ?? "__null__";
-        const est = estimateApiCostCents(row.model, Number(row.inputTokens), Number(row.cachedInputTokens), Number(row.outputTokens));
-        if (est === null) continue;
-        estimatedByProject.set(key, (estimatedByProject.get(key) ?? 0) + est);
-      }
-
-      const rows = await db
+      return db
         .select({
           projectId: effectiveProjectId,
           projectName: projects.name,
@@ -512,13 +506,6 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
-
-      return rows.map((row) => ({
-        ...row,
-        estimatedCostCents: row.costCents > 0
-          ? row.costCents
-          : (estimatedByProject.get(row.projectId ?? "__null__") ?? 0),
-      }));
     },
   };
 }
