@@ -73,6 +73,55 @@ describe("actorMiddleware authenticated session profile", () => {
     });
   });
 
+  it("caches Better Auth session resolution by cookie while refreshing authorization from the database", async () => {
+    const db = {
+      select: vi.fn(() => createSelectChain([])),
+    } as any;
+    const resolveSession = vi.fn(async () => ({
+      session: { id: "session-cache-1", userId: "user-cache-1" },
+      user: {
+        id: "user-cache-1",
+        name: "Cached User",
+        email: "cached@example.com",
+      },
+    }));
+    const app = express();
+    app.use(
+      actorMiddleware(db, {
+        deploymentMode: "authenticated",
+        resolveSession,
+      }),
+    );
+    app.get("/actor", (req, res) => res.json(req.actor));
+
+    const cookie = "better-auth.session_token=mre-cache-positive";
+    const first = await request(app).get("/actor").set("Cookie", cookie);
+    const second = await request(app).get("/actor").set("Cookie", cookie);
+
+    expect(first.body).toMatchObject({ userId: "user-cache-1", source: "session" });
+    expect(second.body).toMatchObject({ userId: "user-cache-1", source: "session" });
+    expect(resolveSession).toHaveBeenCalledTimes(1);
+    expect(db.select).toHaveBeenCalledTimes(4);
+  });
+
+  it("negative-caches null sessions per cookie without sharing across cookies", async () => {
+    const resolveSession = vi.fn(async () => null);
+    const app = express();
+    app.use(
+      actorMiddleware({} as any, {
+        deploymentMode: "authenticated",
+        resolveSession,
+      }),
+    );
+    app.get("/actor", (req, res) => res.json(req.actor));
+
+    await request(app).get("/actor").set("Cookie", "better-auth.session_token=mre-cache-negative-a");
+    await request(app).get("/actor").set("Cookie", "better-auth.session_token=mre-cache-negative-a");
+    await request(app).get("/actor").set("Cookie", "better-auth.session_token=mre-cache-negative-b");
+
+    expect(resolveSession).toHaveBeenCalledTimes(2);
+  });
+
   it("trusts Cloud tenant identity headers and seeds board access", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const inserts: Array<{ values: Record<string, unknown> }> = [];
